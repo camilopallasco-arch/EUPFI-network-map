@@ -104,6 +104,14 @@ for p in T.get("programmes", []):
     for c in ccs:
         links[(fid, c)]["n"] += 1
 
+# euros each country receives per sector (shown when a country is clicked)
+csec = collections.defaultdict(lambda: collections.defaultdict(float))
+for d in deals.values():
+    if d["s"]:
+        for cc in d["c"]:
+            csec[cc][d["s"]] += d["v"] / max(1, len(d["c"]))
+csec = {cc: {k: round(v) for k, v in sorted(m.items(), key=lambda x: -x[1]) if v > 0} for cc, m in csec.items()}
+
 # ---------------------------------------------------------------- 4. overlap: shared countries and sectors, co-financed projects
 cs = collections.defaultdict(lambda: collections.defaultdict(float))  # institution -> (country, sector) -> euros
 for d in deals.values():
@@ -323,7 +331,7 @@ svg text{font-family:var(--sans)}
   <div><div class="code">EU-CFA network tracker</div><h1>European public finance in the CFA franc zone: network, overlap, events</h1></div>
   <nav aria-label="Views">
     <button data-v="net" aria-pressed="true">Network</button><button data-v="ovl" aria-pressed="false">Overlap</button>
-    <button data-v="evt" aria-pressed="false">Events</button><button data-v="abt" aria-pressed="false">About</button>
+    <button data-v="evt" aria-pressed="false">Events</button><button data-v="src" aria-pressed="false">Sources</button><button data-v="abt" aria-pressed="false">About</button>
   </nav>
 </header>
 <main>
@@ -345,6 +353,7 @@ svg text{font-family:var(--sans)}
     <div class="stage"><div class="tools" id="evtools"></div><div class="events" id="evmain"></div></div>
     <aside id="evpanel"></aside>
   </section>
+  <section class="view" id="v-src" hidden><div class="about" id="sources" style="grid-column:1/-1;max-width:1000px"></div></section>
   <section class="view" id="v-abt" hidden><div class="about" id="about" style="grid-column:1/-1"></div></section>
 </main>
 <div class="tip" id="tip" hidden></div>
@@ -367,7 +376,7 @@ function hideTip() { tip.hidden = true; }
 // ---------- views
 document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
   document.querySelectorAll("nav button").forEach(x => x.setAttribute("aria-pressed", x === b));
-  ["net","ovl","evt","abt"].forEach(v => $("#v-" + v).hidden = v !== b.dataset.v);
+  ["net","ovl","evt","src","abt"].forEach(v => $("#v-" + v).hidden = v !== b.dataset.v);
   if (b.dataset.v === "ovl") drawMatrix(); if (b.dataset.v === "evt") drawEvents();
 });
 
@@ -395,19 +404,23 @@ svg.call(zoom).on("dblclick.zoom", null);
 $("#zin").onclick = () => svg.transition().duration(reduce ? 0 : 250).call(zoom.scaleBy, 1.4);
 $("#zout").onclick = () => svg.transition().duration(reduce ? 0 : 250).call(zoom.scaleBy, 1 / 1.4);
 $("#zreset").onclick = () => svg.transition().duration(reduce ? 0 : 250).call(zoom.transform, d3.zoomIdentity);
-let sim = null, selected = null;
+let sim = null, selected = null, focusCountry = null;
 const nodeById = Object.fromEntries(D.nodes.map(n => [n.id, n]));
 const COL = {country: 0.86, memberstate: 0.06, institution: 0.34, agency: 0.6, sector: 0.6, framework: 0.97};
 function visibleNode(n) {
   if (n.k === "institution") return typeOn[n.t];
   if (n.k === "country") return true;
+  if (n.k === "sector" && focusCountry) return true;  // a clicked country shows its sectors
   return layers[n.k];
 }
 function buildGraph() {
   const minv = +$("#minv").value;
   const ns = D.nodes.filter(visibleNode).map(n => Object.assign({}, n));
   const ok = new Set(ns.map(n => n.id));
-  let ls = D.links.filter(l => ok.has(l.s) && ok.has(l.t) && (l.t.startsWith("f:") || l.s.startsWith("f:") || l.v >= minv)).map(l => ({source:l.s, target:l.t, v:l.v, n:l.n}));
+  let ls = D.links.filter(l => ok.has(l.s) && ok.has(l.t) && (l.t.startsWith("f:") || l.s.startsWith("f:") || l.v >= minv))
+    .filter(l => !(focusCountry && !layers.sector && l.t.startsWith("s:")))   // in country focus, sectors connect to that country only
+    .map(l => ({source:l.s, target:l.t, v:l.v, n:l.n}));
+  if (focusCountry) Object.entries(D.csec[focusCountry] || {}).forEach(([sec, v]) => { if (ok.has("s:" + sec)) ls.push({source:"c:" + focusCountry, target:"s:" + sec, v, n:0, cs:true}); });
   const used = new Set(ls.flatMap(l => [l.source, l.target]));
   const nodes = ns.filter(n => used.has(n.id) || n.k === "country");
   const W = $("#netstage").clientWidth, H = $("#netstage").clientHeight;
@@ -416,24 +429,31 @@ function buildGraph() {
   const w = d3.scaleSqrt().domain([0, d3.max(ls, l => l.v) || 1]).range([0.4, 6]);
   gl.selectAll("*").remove(); gn.selectAll("*").remove();
   const link = gl.selectAll("line").data(ls).join("line").attr("class", "link")
-    .attr("stroke", l => { const s = nodeById[l.source]; return s && s.k === "institution" ? KIND.institution.c(s.t) : "#5f7f8c"; })
+    .attr("stroke", l => { if (l.cs) return css("--k-sec"); const s = nodeById[l.source]; return s && s.k === "institution" ? KIND.institution.c(s.t) : "#5f7f8c"; })
     .attr("stroke-width", l => l.v ? w(l.v) : 0.6).attr("stroke-dasharray", l => l.v ? null : "3 3");
   const node = gn.selectAll("g").data(nodes, n => n.id).join("g").attr("class", "node")
     .call(d3.drag().on("start", (e, d) => { if (!e.active) sim.alphaTarget(0.2).restart(); d.fx = d.x; d.fy = d.y; })
       .on("drag", (e, d) => { d.fx = e.x; d.fy = e.y; }).on("end", (e) => { if (!e.active) sim.alphaTarget(0); }))
     .on("dblclick", (e, d) => { d.fx = null; d.fy = null; sim.alpha(0.3).restart(); })
     .on("mousemove", (e, d) => showTip(e, `<b>${esc(d.l)}</b><br>${esc(KIND[d.k].label)}${d.v ? "<br>" + fmt(d.v) + " in the Franc Zone" : ""}`))
-    .on("mouseleave", hideTip).on("click", (e, d) => { selected = d.id; highlight(); panel(d); });
-  node.append("circle").attr("r", d => d.k === "framework" ? 5 : rn(d))
+    .on("mouseleave", hideTip).on("click", (e, d) => {
+      selected = d.id;
+      if (d.k === "country") { const was = focusCountry; focusCountry = d.id.slice(2); if (was !== focusCountry) { buildGraph(); } }
+      highlight(); panel(nodeById[d.id] || d);
+    });
+  const csz = focusCountry ? d3.scaleSqrt().domain([0, d3.max(Object.values(D.csec[focusCountry] || {})) || 1]).range([4, 16]) : null;
+  if (csz) nodes.forEach(d => { if (d.k === "sector" && !layers.sector) d.fv = (D.csec[focusCountry] || {})[d.id.slice(2)] || 0; });
+  node.append("circle").attr("r", d => d.k === "framework" ? 5 : (csz && d.k === "sector" && !layers.sector) ? csz(d.fv) : rn(d))
     .attr("fill", d => d.k === "framework" ? "none" : KIND[d.k].c(d.t, d.u)).attr("stroke", d => d.k === "framework" ? css("--k-fw") : "#000")
     .attr("stroke-width", d => d.k === "framework" ? 1.5 : 0.8);
-  node.filter(d => d.k !== "framework" && (d.k !== "sector" || d.v > 0)).append("text").attr("dx", d => rn(d) + 3).attr("dy", 3.5)
+  node.filter(d => d.k !== "framework" && (d.k !== "sector" || d.v > 0)).append("text")
+    .attr("text-anchor", d => d.k === "sector" ? "end" : "start").attr("dx", d => d.k === "sector" ? -(rn(d) + 3) : rn(d) + 3).attr("dy", 3.5)
     .text(d => d.k === "institution" ? shortName(d.l) : d.l.length > 28 ? d.l.slice(0, 26) + "…" : d.l);
   if (sim) sim.stop();
   sim = d3.forceSimulation(nodes)
     .force("link", d3.forceLink(ls).id(d => d.id).distance(110).strength(0.06))
     .force("charge", d3.forceManyBody().strength(d => -90 - rn(d) * 9))
-    .force("x", d3.forceX(d => W * (COL[d.k] ?? 0.5)).strength(0.55))
+    .force("x", d3.forceX(d => W * (d.k === "sector" && focusCountry && !layers.sector ? 0.93 : (COL[d.k] ?? 0.5))).strength(0.55))
     .force("y", d3.forceY(H / 2).strength(0.04))
     .force("collide", d3.forceCollide(d => rn(d) + 9).strength(0.9))
     .on("tick", () => {
@@ -456,7 +476,7 @@ function highlight() {
   const nb = new Set([selected]); ls.forEach(l => { const s = l.source.id || l.source, t = l.target.id || l.target; if (s === selected) nb.add(t); if (t === selected) nb.add(s); });
   node.classed("faded", d => !nb.has(d.id)); link.classed("faded", l => (l.source.id || l.source) !== selected && (l.target.id || l.target) !== selected);
 }
-svg.on("click", e => { if (e.target === svg.node()) { selected = null; highlight(); netIntro(); } });
+svg.on("click", e => { if (e.target === svg.node()) { selected = null; const had = focusCountry; focusCountry = null; if (had) buildGraph(); highlight(); netIntro(); } });
 function bars(items, color) { const max = Math.max(1, ...items.map(x => x[1]));
   return items.map(([l, v]) => `<div class="bar"><span>${esc(l)}</span><span class="track"><i style="width:${(100 * v / max).toFixed(1)}%;background:${color}"></i></span><span class="val">${fmt(v)}</span></div>`).join(""); }
 function dealList(ds, n = 12) { return ds.sort((a, b) => b.v - a.v).slice(0, n).map(d => `<div class="deal">${esc(d.t)}<div class="meta">${esc(shortName(instName(d.i)))}, ${d.c.map(c => esc((D.countries[c] || {}).n || c)).join(", ")}${d.y ? ", " + esc(d.y) : ""}, ${esc(d.n)} · <span class="amt">${fmt(d.v)}</span>${d.e ? " (estimated share)" : ""} <a href="${esc(d.u)}" target="_blank" rel="noopener">source</a></div></div>`).join(""); }
@@ -474,7 +494,10 @@ function panel(n) {
     if (co.length) html += `<h3>Co-financed projects</h3>` + co.map(c => `<div class="deal">${c.m.map(m => esc(shortName(instName(m[0])))).filter((v,i,a) => a.indexOf(v) === i).join(" + ")} <span class="meta">(shared words: ${esc(c.w.join(", "))})</span></div>`).join("");
     html += `<h3>Largest deals (${ds.length})</h3>${dealList(ds)}`;
   } else if (n.k === "country") {
-    html += `<h3>Institutions</h3>${bars(grp("institution"), css("--t-dfi"))}<h3>Largest deals</h3>${dealList(D.deals.filter(d => d.c.includes(id)))}`;
+    const secs = Object.entries(D.csec[id] || {});
+    html += `<h3>Sectors it receives money in</h3>` + (secs.length ? bars(secs.slice(0, 11).map(([s, v]) => [s, v]), css("--k-sec")) : `<p class="hint">No sector recorded.</p>`) +
+      `<p class="hint">Shown as green links on the graph. Click empty space to hide them.</p>` +
+      `<h3>Institutions</h3>${bars(grp("institution"), css("--t-dfi"))}<h3>Largest deals</h3>${dealList(D.deals.filter(d => d.c.includes(id)))}`;
   } else if (n.k === "memberstate") {
     html += `<h3>Institutions</h3>${bars(grp("institution"), css("--t-dfi"))}`;
   } else if (n.k === "sector") {
@@ -491,7 +514,7 @@ function netIntro() {
   const tot = D.deals.reduce((s, d) => s + d.v, 0);
   $("#netpanel").innerHTML = `<h2>The network</h2><p class="hint">European public financial institutions (development banks, DFIs, promotional banks, export credit agencies, EU institutions) and World Bank trust funds financed by European donors, linked to the 14 CFA franc countries they finance since 1999, to their member states, and to the agencies that implement EU funds.</p>
     <div class="big">${fmt(tot)}</div><div class="hint">${D.deals.length.toLocaleString("en")} deals from ${Object.keys(D.inst).length} institutions in scope</div>
-    <h3>How to read it</h3><p class="hint">Click any dot for its details and sources. Click empty space to clear. Use the buttons to add sectors or frameworks, or to hide small links.</p>
+    <h3>How to read it</h3><p class="hint">Click any dot for its details and sources. Click a country to see the sectors it receives money in. Click empty space to clear. Use the buttons to add sectors or frameworks, or to hide small links.</p>
     ${D.site ? `<p><a href="${esc(D.site)}" target="_blank" rel="noopener" style="color:var(--accent)">Open the EU-CFA Public finance tracker</a></p>` : ""}`;
 }
 netIntro();
@@ -564,6 +587,23 @@ function drawEvents() {
     (D.warnings.length ? `<h3>Build warnings</h3>` + D.warnings.map(w => `<div class="warn">${esc(w)}</div>`).join("") : "");
 }
 
+// ---------- SOURCES
+(() => {
+  const row = s => `<div class="deal"><b>${esc(s.name)}</b><div class="meta">${esc(s.provider)} · ${esc(s.method)}${s.records ? " · " + s.records.toLocaleString("en") + " deals" : ""}</div>
+    <div class="meta">${esc(s.provides)}</div><div class="meta">Licence: ${esc(s.licence)}${s.url ? ` · <a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.url.replace(/^https?:\/\//, "").slice(0, 70))}</a>` : ""}</div></div>`;
+  const TS = D.tracker_sources || [], roles = ["Figures", "Regional layer", "Programmes", "Reference", "Recommended next"];
+  const evBad = D.warnings.filter(w => w.startsWith("Event"));
+  const LC = D.tracker_checks || {};
+  $("#sources").innerHTML = `<h2>Sources</h2>
+    <p>Every deal in this network comes from the EU-CFA Public finance tracker and links to the record it came from: click any dot, then "source". Events link their own sources. Below: this site's own sources, then the tracker's full source register.</p>
+    <h2>This site</h2>${D.own_sources.map(row).join("")}
+    <h3>Event sources checked at this build: ${D.events.length - evBad.length} of ${D.events.length} answered normally</h3>${evBad.map(w => `<div class="warn">${esc(w)}</div>`).join("")}
+    <h2>The tracker's sources</h2>` + (TS.length ? roles.map(r => { const rs = TS.filter(s => s.role === r); return rs.length ? `<h3>${esc(r)}</h3>` + rs.map(row).join("") : ""; }).join("") +
+    (LC.checked ? `<h3>Tracker link check: ${LC.ok} of ${LC.checked} cited links answered normally</h3>` + (LC.problems || []).map(([u, c, used]) => `<div class="warn">${esc(c)}: <a href="${esc(u)}" target="_blank" rel="noopener" style="color:inherit">${esc(u.slice(0, 80))}</a> (${esc(used.join("; "))})</div>`).join("") +
+      `<p class="hint">Some sites refuse automated checks (403) but open in a browser; Capacity4dev pages need a login.</p>` : "")
+    : `<p class="hint">The tracker's source register appears here once the tracker has run with its new Sources feature.</p>`);
+})();
+
 // ---------- ABOUT
 $("#about").innerHTML = `<h2>About this tracker</h2>
   <p>The EU-CFA Network tracker shows how European public financial institutions connect, overlap and respond to events in the 14 countries of the CFA franc zone: the eight WAEMU countries in West Africa and the six CEMAC countries in Central Africa (the Comoros are not covered). It is a companion to the EU-CFA Public finance tracker and reads that tracker's data, so both always show the same deals.</p>
@@ -589,11 +629,20 @@ except NameError:  # during development the page template is a separate file
     TEMPLATE = (ROOT / "template.html").read_text(encoding="utf-8")
 
 # ---------------------------------------------------------------- 7. write the page
+own_sources = [
+    {"name": "EU-CFA Public finance tracker data", "provider": "Your tracker (data/tracker.json)", "url": TRACKER_DATA_URL or TRACKER_SITE_URL,
+     "method": "Read at every build" if TRACKER_DATA_URL else "Saved copy in data/tracker.json", "licence": "Same as the tracker's sources (see below)",
+     "provides": f"All deals, institutions, countries and programmes, data of {generated}. Each deal links to its original record."},
+    {"name": "Event log", "provider": "data/events.csv", "url": "", "method": "Hand-checked; every link tested at build",
+     "licence": "Per event", "provides": f"{len(events)} events, each with its own source (listed in the Events tab)."},
+    {"name": "D3.js graphics library", "provider": "Mike Bostock and contributors", "url": "https://d3js.org", "method": "Downloaded once and embedded",
+     "licence": "ISC", "provides": "Draws the network, the matrix and the timeline."}]
 bundle = {"generated": generated, "built": TODAY.isoformat(), "site": TRACKER_SITE_URL,
+          "own_sources": own_sources, "tracker_sources": T.get("sources", []), "tracker_checks": T.get("link_checks", {}),
           "inst": {k: {"n": v["name"], "t": v["type"], "ms": v["member_state"]} for k, v in INST.items()},
           "countries": {k: {"n": v["name"], "u": v.get("union", "")} for k, v in COUNTRIES.items()},
           "nodes": list(nodes.values()), "links": [{"s": a, "t": b, **v} for (a, b), v in links.items()],
-          "deals": list(deals.values()), "top": top, "matrix": matrix, "pairs": pair_detail, "cofin": cofin[:150],
+          "deals": list(deals.values()), "csec": csec, "top": top, "matrix": matrix, "pairs": pair_detail, "cofin": cofin[:150],
           "years": years, "timeline": timeline, "events": events, "warnings": warnings}
 d3 = REF / "d3.min.js"
 if not d3.exists():

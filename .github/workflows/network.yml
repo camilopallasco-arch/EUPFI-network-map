@@ -1,0 +1,39 @@
+   name: Build network tracker
+
+   on:
+     schedule:
+       - cron: "0 7 1 * *"
+     workflow_dispatch:
+     push:
+       branches: [main]
+
+   permissions:
+     contents: write
+     pages: write
+     id-token: write
+
+   jobs:
+     build:
+       runs-on: ubuntu-latest
+       environment:
+         name: github-pages
+         url: ${{ steps.deploy.outputs.page_url }}
+       steps:
+         - uses: actions/checkout@v4
+         - uses: actions/setup-python@v5
+           with:
+             python-version: "3.12"
+         - name: Build the network, overlap and events pages
+           run: python network.py
+         - name: Save the updated data
+           run: |
+             git config user.name "tracker-bot"
+             git config user.email "tracker-bot@users.noreply.github.com"
+             git add data site ref
+             git diff --cached --quiet || git commit -m "Network tracker update $(date +%Y-%m-%d)"
+             git push
+         - uses: actions/upload-pages-artifact@v3
+           with:
+             path: site
+         - id: deploy
+           uses: actions/deploy-pages@v4

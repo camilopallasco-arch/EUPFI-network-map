@@ -55,7 +55,7 @@ for a in T["allocations"]:
         continue
     d = deals.setdefault(inv["investment_id"], {"id": inv["investment_id"], "i": inv["institution_id"], "t": inv["title"][:160],
                                                 "y": inv.get("year") or "", "n": inv.get("instrument", ""), "s": inv.get("sector_broad", ""),
-                                                "u": inv.get("source_url", ""), "g": inv.get("impl_agency", ""), "v": 0.0, "c": [], "e": False})
+                                                "u": inv.get("source_url", ""), "g": inv.get("impl_agency", ""), "gm": inv.get("impl_ms", ""), "v": 0.0, "c": [], "e": False})
     d["v"] += a.get("amount_attributed_eur") or 0
     d["c"].append(a["country"])
     if a.get("attribution_method") == "equal_split_estimate":
@@ -82,7 +82,7 @@ for d in deals.values():
         nodes["s:" + d["s"]]["v"] += d["v"]
         l = links[("i:" + d["i"], "s:" + d["s"])]; l["v"] += d["v"]; l["n"] += 1
     if d["g"] and ins["type"] == "EU institution":  # EU money entrusted to an implementing agency
-        node("a:" + d["g"], "agency", d["g"])
+        node("a:" + d["g"], "agency", d["g"], ms=d.get("gm", ""))
         nodes["a:" + d["g"]]["v"] += d["v"]
         l = links[("i:" + d["i"], "a:" + d["g"])]; l["v"] += d["v"]; l["n"] += 1
 for nid, n in list(nodes.items()):
@@ -90,6 +90,11 @@ for nid, n in list(nodes.items()):
         node("m:" + n["ms"], "memberstate", MS_NAMES.get(n["ms"], n["ms"]))
         nodes["m:" + n["ms"]]["v"] += n["v"]
         l = links[("m:" + n["ms"], nid)]; l["v"] += n["v"]; l["n"] += 1
+# each implementing agency belongs to a member state: a "belongs to" link without amount (the money it implements is EU money)
+for nid, n in list(nodes.items()):
+    if n["k"] == "agency" and n.get("ms") and n["ms"] != "EU":
+        node("m:" + n["ms"], "memberstate", MS_NAMES.get(n["ms"], n["ms"]))
+        links[("m:" + n["ms"], nid)]["n"] += 1
 # frameworks (programmes): participants and countries, no amounts added up
 for p in T.get("programmes", []):
     fid = "f:" + p["programme_id"]
@@ -456,7 +461,7 @@ function render3D(nodes, ls, rn, labelled) {
   const el = $("#net3d"), stage = $("#netstage");
   const prev = G3 ? Object.fromEntries(G3.graphData().nodes.map(n => [n.id, n])) : {};
   nodes.forEach(n => { const p = prev[n.id]; if (p) { n.x = p.x; n.y = p.y; n.z = p.z; } });
-  ls.forEach(l => { const s = nodeById[l.source]; l.col = l.cs ? css("--k-sec") : s && s.k === "institution" ? KIND.institution.c(s.t) : "#6f8f9c"; });
+  ls.forEach(l => { const s = nodeById[l.source], t = nodeById[l.target]; l.col = l.cs ? css("--k-sec") : s && s.k === "institution" ? KIND.institution.c(s.t) : (s && s.k === "memberstate" && t && t.k === "agency") ? css("--k-ag") : "#6f8f9c"; });
   if (!G3) {
     G3 = ForceGraph3D({controlType: "orbit"})(el)
       .backgroundColor("#02060b").showNavInfo(false)
@@ -538,7 +543,7 @@ function buildGraph() {
   const minv = +$("#minv").value;
   const ns = D.nodes.filter(visibleNode).map(n => Object.assign({}, n));
   const ok = new Set(ns.map(n => n.id));
-  let ls = D.links.filter(l => ok.has(l.s) && ok.has(l.t) && (l.t.startsWith("f:") || l.s.startsWith("f:") || l.v >= minv))
+  let ls = D.links.filter(l => ok.has(l.s) && ok.has(l.t) && (l.t.startsWith("f:") || l.s.startsWith("f:") || (l.s.startsWith("m:") && l.t.startsWith("a:")) || l.v >= minv))
     .filter(l => !(focusCountry && !layers.sector && l.t.startsWith("s:")))   // in country focus, sectors connect to that country only
     .map(l => ({source:l.s, target:l.t, v:l.v, n:l.n}));
   if (focusCountry) Object.entries(D.csec[focusCountry] || {}).forEach(([sec, v]) => { if (ok.has("s:" + sec)) ls.push({source:"c:" + focusCountry, target:"s:" + sec, v, n:0, cs:true}); });
@@ -626,10 +631,13 @@ function panel(n) {
       `<h3>Institutions</h3>${bars(grp("institution"), css("--t-dfi"))}<h3>Largest deals</h3>${dealList(D.deals.filter(d => d.c.includes(id)))}`;
   } else if (n.k === "memberstate") {
     html += `<h3>Institutions</h3>${bars(grp("institution"), css("--t-dfi"))}`;
+    const ags = nb.filter(([m]) => m.k === "agency").map(([m]) => m);
+    if (ags.length) html += `<h3>Its agencies implementing EU funds</h3>` + ags.map(m => `<div class="deal">${esc(m.l)} <span class="meta">implements ${fmt(m.v)} of EU money in the Franc Zone, counted under the EU, not under ${esc(n.l)}</span></div>`).join("");
   } else if (n.k === "sector") {
     html += `<h3>Institutions</h3>${bars(grp("institution"), css("--t-dfi"))}<h3>Largest deals</h3>${dealList(D.deals.filter(d => d.s === id))}`;
   } else if (n.k === "agency") {
-    html += `<p class="hint">EU money (Commission, EU Trust Fund for Africa, blending, EU-AITF) entrusted to this agency to implement; counted under the EU.</p><h3>From</h3>${bars(grp("institution"), css("--t-eu"))}<h3>Largest EU-funded deals it implements</h3>${dealList(D.deals.filter(d => d.g === id))}`;
+    const msn = nb.find(([m]) => m.k === "memberstate");
+    html += `<p class="hint">${msn ? `A public agency of ${esc(msn[0].l)}. ` : ""}EU money (Commission, EU Trust Fund for Africa, blending, EU-AITF) entrusted to this agency to implement; counted under the EU, not under ${msn ? esc(msn[0].l) : "the member state"}. Its own national budget is not in this network.</p><h3>From</h3>${bars(grp("institution"), css("--t-eu"))}<h3>Largest EU-funded deals it implements</h3>${dealList(D.deals.filter(d => d.g === id))}`;
   } else if (n.k === "framework") {
     html += `<p class="hint">${esc(n.fk)}. Frameworks carry no amounts in this network: the money appears in the deals of the institutions involved.</p><h3>Linked to</h3>` +
       nb.map(([m]) => `<div class="deal">${esc(m.l)} <span class="meta">${esc(KIND[m.k].label)}</span></div>`).join("") + (n.src ? `<p><a href="${esc(n.src)}" target="_blank" rel="noopener">Source</a></p>` : "");

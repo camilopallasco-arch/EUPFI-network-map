@@ -406,7 +406,7 @@ document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
 const KIND = {institution:{c:t => css(TYPEVAR[t] || "--t-dfi"), label:"Institution"}, country:{c:(t,u) => css(u === "CEMAC" ? "--cemac" : "--waemu"), label:"Country"},
   memberstate:{c:() => css("--k-ms"), label:"Member state"}, sector:{c:() => css("--k-sec"), label:"Sector"}, agency:{c:() => css("--k-ag"), label:"Implementing agency (EU funds)"},
   framework:{c:() => css("--k-fw"), label:"Framework (no amounts)"}};
-const layers = {memberstate:true, sector:false, agency:true, framework:false};
+const layers = {memberstate:true, sector:false, agency:false, framework:false};
 const typeOn = Object.fromEntries(Object.keys(TYPEVAR).map(t => [t, true]));
 const lay = $("#layers");
 function chip(label, color, on, fn) { const b = document.createElement("button"); b.className = "chip"; b.setAttribute("aria-pressed", on);
@@ -432,7 +432,15 @@ let sim = null, selected = null, focusCountry = null;
 if (USE3D) $("#netstage").classList.add("use3d");
 else { $("#modenote").hidden = false; $("#modenote").textContent = "This computer cannot draw the 3D view, so the 2D network is shown."; }
 let G3 = null, hovered = null, nbrs = new Set(), hotLinks = new Set();
-const SHELL = {memberstate: 45, institution: 135, agency: 205, sector: 245, framework: 265, country: 320};
+// left to right: (1) member states and EU institutions, (2) national public financial institutions, (3) countries, (4) a clicked country's sectors;
+// implementing agencies float above, frameworks below
+const GROUP_POS = {owners: [-520, 0, 0], pfi: [0, 0, 0], country: [520, 0, 0], sector: [900, 0, 0], agency: [-260, 480, 0], framework: [0, -480, 0]};
+const GROUP_COL = {owners: "#e8d27a", pfi: "#3a8cff", country: "#ffb648", sector: "#3fd9b0", agency: "#b77dff", framework: "#7f98aa"};
+function groupOf(d) {
+  if (d.k === "memberstate" || (d.k === "institution" && d.t === "EU institution")) return "owners";
+  if (d.k === "institution") return "pfi";
+  return d.k;
+}
 function glowTexture() {
   const c = document.createElement("canvas"); c.width = c.height = 128; const g = c.getContext("2d");
   const gr = g.createRadialGradient(64, 64, 0, 64, 64, 64);
@@ -446,15 +454,18 @@ function textSprite(text, color) {
   c.width = w; c.height = fs + 22; g.font = `600 ${fs}px IBM Plex Sans, Segoe UI, sans-serif`;
   g.lineWidth = 8; g.strokeStyle = "rgba(0,0,0,.85)"; g.strokeText(text, 12, fs); g.fillStyle = color; g.fillText(text, 12, fs);
   const s = new THREE.Sprite(new THREE.SpriteMaterial({map: new THREE.CanvasTexture(c), transparent: true, depthWrite: false}));
-  s.scale.set(c.width / 5.5, c.height / 5.5, 1); return s;
+  s.scale.set(c.width / 3.6, c.height / 3.6, 1); return s;
 }
-function shellForce(alpha) {
+function shellForce(alpha) {  // pulls each actor towards the centre of its group's cloud
   for (const n of shellForce.nodes || []) {
-    const R = SHELL[n.k] || 200, x = n.x || 0.01, y = n.y || 0.01, z = n.z || 0.01, r = Math.hypot(x, y, z) || 1, k = (R - r) / r * alpha * 0.25;
-    n.vx += x * k; n.vy += y * k; n.vz += z * k;
+    const [tx, ty, tz] = GROUP_POS[groupOf(n)] || [0, 0, 0];
+    n.vx += (tx - (n.x || 0)) * alpha * 0.22;
+    n.vy += (ty - (n.y || 0)) * alpha * 0.018;
+    n.vz += (tz - (n.z || 0)) * alpha * 0.018;
   }
 }
 shellForce.initialize = ns => { shellForce.nodes = ns; };
+const CLOUDS = {};
 function nodeColor(d) { return d.k === "framework" ? css("--k-fw") : KIND[d.k].c(d.t, d.u); }
 function render3D(nodes, ls, rn, labelled) {
   if (!GLOW) GLOW = glowTexture();
@@ -466,7 +477,7 @@ function render3D(nodes, ls, rn, labelled) {
     G3 = ForceGraph3D({controlType: "orbit"})(el)
       .backgroundColor("#02060b").showNavInfo(false)
       .nodeThreeObject(d => {
-        const col = nodeColor(d), size = Math.max(4, rn(d) * 0.85), grp = new THREE.Group();
+        const col = nodeColor(d), size = Math.max(7, rn(d) * 1.25), grp = new THREE.Group();
         const glow = new THREE.Sprite(new THREE.SpriteMaterial({map: GLOW, color: col, transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: false}));
         glow.scale.set(size * 4, size * 4, 1);
         const core = new THREE.Mesh(new THREE.SphereGeometry(size * 0.42, 18, 14), new THREE.MeshBasicMaterial({color: col, transparent: true, opacity: 0.95}));
@@ -482,24 +493,30 @@ function render3D(nodes, ls, rn, labelled) {
       .onNodeClick(n => clickNode(n))
       .onBackgroundClick(() => { selected = null; const had = focusCountry; focusCountry = null; setHover(null); if (had) buildGraph(); netIntro(); })
       .d3Force("shell", shellForce).d3VelocityDecay(0.35).cooldownTicks(reduce ? 0 : 300);
-    G3.d3Force("charge").strength(-55);
-    G3.d3Force("link").distance(60).strength(0.05);
+    G3.d3Force("charge").strength(-260).distanceMax(300);
+    G3.d3Force("link").distance(120).strength(0.004);
     // a faint star field for the nebula look
     const pts = [], N = 2200;
     for (let i = 0; i < N; i++) { const r = 900 + Math.random() * 1500, a = Math.random() * Math.PI * 2, b = Math.acos(2 * Math.random() - 1); pts.push(r * Math.sin(b) * Math.cos(a), r * Math.sin(b) * Math.sin(a), r * Math.cos(b)); }
     const geo = new THREE.BufferGeometry(); geo.setAttribute("position", new THREE.Float32BufferAttribute(pts, 3));
     G3.scene().add(new THREE.Points(geo, new THREE.PointsMaterial({color: 0x7fb8d8, size: 1.6, transparent: true, opacity: 0.55, depthWrite: false})));
     // coloured clouds of light: the nebula
-    const CLOUD = ["#1f6fd6", "#16b3a4", "#7a3fd1", "#c97a2a", "#1aa0d8", "#9a2f7a"];
-    for (let i = 0; i < 16; i++) {
-      const m = new THREE.Sprite(new THREE.SpriteMaterial({map: GLOW, color: CLOUD[i % CLOUD.length], transparent: true, opacity: 0.07 + Math.random() * 0.05, blending: THREE.AdditiveBlending, depthWrite: false}));
-      const r = 80 + Math.random() * 260, a = Math.random() * Math.PI * 2, b = Math.acos(2 * Math.random() - 1), sc = 380 + Math.random() * 520;
-      m.position.set(r * Math.sin(b) * Math.cos(a), r * Math.sin(b) * Math.sin(a), r * Math.cos(b)); m.scale.set(sc, sc, 1); m.renderOrder = -1;
-      G3.scene().add(m);
+    for (const [g, [x, y, z]] of Object.entries(GROUP_POS)) {
+      const grp = new THREE.Group();
+      for (let i = 0; i < 4; i++) {
+        const m = new THREE.Sprite(new THREE.SpriteMaterial({map: GLOW, color: GROUP_COL[g], transparent: true, opacity: 0.09 + i * 0.015, blending: THREE.AdditiveBlending, depthWrite: false}));
+        const sc = 620 - i * 100;
+        m.position.set(x + (Math.random() - 0.5) * 60, y + (Math.random() - 0.5) * 60, z + (Math.random() - 0.5) * 60); m.scale.set(sc, sc, 1); m.renderOrder = -1;
+        grp.add(m);
+      }
+      CLOUDS[g] = grp; G3.scene().add(grp);
     }
     if (!reduce) (function pulse(t) { if (hovered && hovered.__glow) { const s = hovered.__size * (7.5 + Math.sin(t / 260) * 1.4); hovered.__glow.scale.set(s, s, 1); } requestAnimationFrame(pulse); })(0);
-    setTimeout(() => G3.zoomToFit(reduce ? 0 : 900, 30), 1600);
+    G3.cameraPosition({x: 60, y: 40, z: 1150}, {x: 60, y: 0, z: 0}, 0);
+    setTimeout(() => G3.zoomToFit(reduce ? 0 : 900, 10), 2600);
   }
+  const present = new Set(nodes.map(groupOf));
+  Object.entries(CLOUDS).forEach(([g, c]) => { c.visible = present.has(g); });
   G3.width(stage.clientWidth).height(stage.clientHeight).graphData({nodes, links: ls});
   if (selected) { const n = G3.graphData().nodes.find(x => x.id === selected); if (n) setTimeout(() => setHover(n, true), 50); }
 }
@@ -554,7 +571,7 @@ function buildGraph() {
   const r = v => r0(v); const rn = d => d.k === "memberstate" ? Math.min(14, 3 + r0(d.v || 0) * 0.4) : r0(d.v || 0);
   if (USE3D) {
     const instV = nodes.filter(n => n.k === "institution").map(n => n.v).sort((a, b) => b - a), cut = instV[Math.min(14, instV.length - 1)] || 0;
-    render3D(nodes, ls, rn, d => d.k === "country" || d.k === "memberstate" || (d.k === "institution" && d.v >= cut) || d.k === "agency" || (d.k === "sector" && focusCountry));
+    render3D(nodes, ls, rn, d => d.k === "country" || d.k === "memberstate" || d.k === "institution" || d.k === "agency" || (d.k === "sector" && focusCountry));
     return;
   }
   const w = d3.scaleSqrt().domain([0, d3.max(ls, l => l.v) || 1]).range([0.4, 6]);
@@ -584,7 +601,7 @@ function buildGraph() {
   sim = d3.forceSimulation(nodes)
     .force("link", d3.forceLink(ls).id(d => d.id).distance(110).strength(0.06))
     .force("charge", d3.forceManyBody().strength(d => -90 - rn(d) * 9))
-    .force("x", d3.forceX(d => W * (d.k === "sector" && focusCountry && !layers.sector ? 0.93 : (COL[d.k] ?? 0.5))).strength(0.55))
+    .force("x", d3.forceX(d => W * (d.k === "sector" && focusCountry && !layers.sector ? 0.93 : groupOf(d) === "owners" ? 0.08 : (COL[d.k] ?? 0.5))).strength(0.55))
     .force("y", d3.forceY(H / 2).strength(0.04))
     .force("collide", d3.forceCollide(d => rn(d) + 9).strength(0.9))
     .on("tick", () => {

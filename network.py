@@ -283,6 +283,15 @@ aside h3{margin:16px 0 6px;font-size:13px;color:var(--muted);font-weight:600}
 select,input[type=range]{font:500 13px var(--sans);color:var(--ink);background:var(--panel2);border:1px solid var(--line);padding:5px 7px}
 label.ctl{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--muted);background:rgba(4,12,17,.85);border:1px solid var(--line);padding:3px 8px}
 #net{position:absolute;top:0;left:0;width:100%;height:100%;display:block;cursor:grab}
+#net3d{position:absolute;top:0;left:0;width:100%;height:100%;display:none}
+.use3d #net3d{display:block}
+.use3d #net{display:none}
+#v-net:fullscreen{background:var(--bg);width:100vw;height:100vh}
+#v-net:fullscreen .stage{height:100vh}
+.zoom button.fs{width:auto;padding:0 10px;font-size:13px;display:inline-flex;align-items:center;gap:6px}
+.scene-tooltip:empty{display:none}
+.scene-tooltip{font:500 12.5px var(--sans)!important;color:var(--ink)!important;background:rgba(10,28,38,.92)!important;border:1px solid var(--line-hi);padding:6px 9px!important;border-radius:0!important}
+.modenote{position:absolute;right:14px;bottom:12px;z-index:2;font-size:12px;color:var(--muted);background:rgba(4,12,17,.85);border:1px solid var(--line);padding:5px 9px}
 svg text{font-family:var(--sans)}
 .node{cursor:pointer}
 .node text{fill:var(--ink);font-size:10.5px;pointer-events:none;paint-order:stroke;stroke:#000;stroke-width:3px}
@@ -338,8 +347,11 @@ svg text{font-family:var(--sans)}
   <section class="view" id="v-net">
     <div class="stage" id="netstage">
       <div class="tools" id="layers"></div>
-      <div class="zoom"><button id="zin" aria-label="Zoom in">+</button><button id="zout" aria-label="Zoom out">−</button><button id="zreset" aria-label="Reset view">↺</button></div>
+      <div class="zoom"><button id="zin" aria-label="Zoom in">+</button><button id="zout" aria-label="Zoom out">−</button><button id="zreset" aria-label="Reset view">↺</button>
+        <button id="fs" class="fs" aria-label="Full screen" title="Full screen (Esc to leave)"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M1 5V1h4M9 1h4v4M13 9v4H9M5 13H1V9" fill="none" stroke="currentColor" stroke-width="1.6"/></svg><span>Full screen</span></button></div>
       <svg id="net" role="img" aria-label="Network of European public financial institutions, countries, sectors and agencies"></svg>
+      <div id="net3d" aria-label="Three-dimensional network: drag to rotate, scroll to zoom"></div>
+      <div class="modenote" id="modenote" hidden></div>
       <div class="legend" id="netlegend"></div>
     </div>
     <aside id="netpanel"></aside>
@@ -358,10 +370,15 @@ svg text{font-family:var(--sans)}
 </main>
 <div class="tip" id="tip" hidden></div>
 <script>/*__D3__*/</script>
+<script>/*__THREE__*/</script>
+<script>/*__FG3D__*/</script>
 <script>const DATA = /*__DATA__*/null;</script>
 <script>
 (() => {
 const D = DATA, $ = s => document.querySelector(s);
+const HAS_WEBGL = (() => { try { const c = document.createElement("canvas"); return !!(window.WebGLRenderingContext && (c.getContext("webgl2") || c.getContext("webgl"))); } catch (e) { return false; } })();
+const USE3D = HAS_WEBGL && typeof ForceGraph3D === "function" && typeof THREE !== "undefined";
+
 const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const fmt = v => v >= 1e9 ? "€" + (v/1e9).toFixed(1) + " bn" : v >= 1e6 ? "€" + (v/1e6).toFixed(v >= 1e8 ? 0 : 1) + " m" : v >= 1e3 ? "€" + Math.round(v/1e3) + " k" : "€" + Math.round(v || 0);
@@ -396,15 +413,119 @@ const minWrap = document.createElement("label"); minWrap.className = "ctl";
 minWrap.innerHTML = `Hide links under <select id="minv"><option value="0">€0</option><option value="1000000" selected>€1 m</option><option value="10000000">€10 m</option><option value="50000000">€50 m</option></select>`;
 lay.append(minWrap); $("#minv").onchange = buildGraph;
 $("#netlegend").innerHTML = Object.entries(KIND).map(([k,v]) => `<span><i class="sw" style="background:${k === "country" ? css("--waemu") : v.c()}"></i>${v.label}</span>`).join("") +
-  `<span>Size and line width follow euros. Drag a dot to pin it, double-click to release.</span>`;
+  (USE3D ? `<span>Drag to rotate, scroll to zoom, hover to light up an actor, click for details.</span>` : `<span>Size and line width follow euros. Drag a dot to pin it, double-click to release.</span>`);
 
 const svg = d3.select("#net"), g = svg.append("g"), gl = g.append("g"), gn = g.append("g");
 const zoom = d3.zoom().scaleExtent([0.2, 6]).on("zoom", e => g.attr("transform", e.transform));
 svg.call(zoom).on("dblclick.zoom", null);
-$("#zin").onclick = () => svg.transition().duration(reduce ? 0 : 250).call(zoom.scaleBy, 1.4);
-$("#zout").onclick = () => svg.transition().duration(reduce ? 0 : 250).call(zoom.scaleBy, 1 / 1.4);
-$("#zreset").onclick = () => svg.transition().duration(reduce ? 0 : 250).call(zoom.transform, d3.zoomIdentity);
+const cam = f => { const p = G3.cameraPosition(); G3.cameraPosition({x: p.x * f, y: p.y * f, z: p.z * f}, undefined, reduce ? 0 : 400); };
+$("#zin").onclick = () => USE3D && G3 ? cam(0.72) : svg.transition().duration(reduce ? 0 : 250).call(zoom.scaleBy, 1.4);
+$("#zout").onclick = () => USE3D && G3 ? cam(1.38) : svg.transition().duration(reduce ? 0 : 250).call(zoom.scaleBy, 1 / 1.4);
+$("#zreset").onclick = () => USE3D && G3 ? G3.zoomToFit(reduce ? 0 : 800, 30) : svg.transition().duration(reduce ? 0 : 250).call(zoom.transform, d3.zoomIdentity);
 let sim = null, selected = null, focusCountry = null;
+// ---------- 3D nebula (falls back to the 2D network when the computer cannot draw 3D)
+if (USE3D) $("#netstage").classList.add("use3d");
+else { $("#modenote").hidden = false; $("#modenote").textContent = "This computer cannot draw the 3D view, so the 2D network is shown."; }
+let G3 = null, hovered = null, nbrs = new Set(), hotLinks = new Set();
+const SHELL = {memberstate: 45, institution: 135, agency: 205, sector: 245, framework: 265, country: 320};
+function glowTexture() {
+  const c = document.createElement("canvas"); c.width = c.height = 128; const g = c.getContext("2d");
+  const gr = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+  gr.addColorStop(0, "rgba(255,255,255,1)"); gr.addColorStop(0.18, "rgba(255,255,255,.7)"); gr.addColorStop(0.45, "rgba(255,255,255,.18)"); gr.addColorStop(1, "rgba(255,255,255,0)");
+  g.fillStyle = gr; g.fillRect(0, 0, 128, 128); return new THREE.CanvasTexture(c);
+}
+let GLOW = null;
+function textSprite(text, color) {
+  const c = document.createElement("canvas"), g = c.getContext("2d"), fs = 44;
+  g.font = `600 ${fs}px IBM Plex Sans, Segoe UI, sans-serif`; const w = Math.ceil(g.measureText(text).width) + 24;
+  c.width = w; c.height = fs + 22; g.font = `600 ${fs}px IBM Plex Sans, Segoe UI, sans-serif`;
+  g.lineWidth = 8; g.strokeStyle = "rgba(0,0,0,.85)"; g.strokeText(text, 12, fs); g.fillStyle = color; g.fillText(text, 12, fs);
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({map: new THREE.CanvasTexture(c), transparent: true, depthWrite: false}));
+  s.scale.set(c.width / 5.5, c.height / 5.5, 1); return s;
+}
+function shellForce(alpha) {
+  for (const n of shellForce.nodes || []) {
+    const R = SHELL[n.k] || 200, x = n.x || 0.01, y = n.y || 0.01, z = n.z || 0.01, r = Math.hypot(x, y, z) || 1, k = (R - r) / r * alpha * 0.25;
+    n.vx += x * k; n.vy += y * k; n.vz += z * k;
+  }
+}
+shellForce.initialize = ns => { shellForce.nodes = ns; };
+function nodeColor(d) { return d.k === "framework" ? css("--k-fw") : KIND[d.k].c(d.t, d.u); }
+function render3D(nodes, ls, rn, labelled) {
+  if (!GLOW) GLOW = glowTexture();
+  const el = $("#net3d"), stage = $("#netstage");
+  const prev = G3 ? Object.fromEntries(G3.graphData().nodes.map(n => [n.id, n])) : {};
+  nodes.forEach(n => { const p = prev[n.id]; if (p) { n.x = p.x; n.y = p.y; n.z = p.z; } });
+  ls.forEach(l => { const s = nodeById[l.source]; l.col = l.cs ? css("--k-sec") : s && s.k === "institution" ? KIND.institution.c(s.t) : "#6f8f9c"; });
+  if (!G3) {
+    G3 = ForceGraph3D({controlType: "orbit"})(el)
+      .backgroundColor("#02060b").showNavInfo(false)
+      .nodeThreeObject(d => {
+        const col = nodeColor(d), size = Math.max(4, rn(d) * 0.85), grp = new THREE.Group();
+        const glow = new THREE.Sprite(new THREE.SpriteMaterial({map: GLOW, color: col, transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: false}));
+        glow.scale.set(size * 4, size * 4, 1);
+        const core = new THREE.Mesh(new THREE.SphereGeometry(size * 0.42, 18, 14), new THREE.MeshBasicMaterial({color: col, transparent: true, opacity: 0.95}));
+        grp.add(glow); grp.add(core);
+        if (labelled(d)) { const s = textSprite(d.k === "institution" ? shortName(d.l) : d.l.length > 30 ? d.l.slice(0, 28) + "…" : d.l, "#e9f8ff"); s.position.set(0, size * 1.1 + 4, 0); grp.add(s); d.__label = s; }
+        d.__glow = glow; d.__core = core; d.__size = size; return grp;
+      })
+      .nodeLabel(d => `<b>${esc(d.l)}</b><br>${esc(KIND[d.k].label)}${d.v ? "<br>" + fmt(d.v) + " in the Franc Zone" : ""}`)
+      .linkColor(l => l.col).linkOpacity(0.2).linkWidth(l => hotLinks.has(l) ? 0.9 : 0)
+      .linkVisibility(l => !hovered || hotLinks.has(l))
+      .linkDirectionalParticles(l => (!reduce && hotLinks.has(l)) ? 3 : 0).linkDirectionalParticleWidth(1.8).linkDirectionalParticleSpeed(0.007)
+      .onNodeHover(n => { el.style.cursor = n ? "pointer" : "grab"; setHover(n); })
+      .onNodeClick(n => clickNode(n))
+      .onBackgroundClick(() => { selected = null; const had = focusCountry; focusCountry = null; setHover(null); if (had) buildGraph(); netIntro(); })
+      .d3Force("shell", shellForce).d3VelocityDecay(0.35).cooldownTicks(reduce ? 0 : 300);
+    G3.d3Force("charge").strength(-55);
+    G3.d3Force("link").distance(60).strength(0.05);
+    // a faint star field for the nebula look
+    const pts = [], N = 2200;
+    for (let i = 0; i < N; i++) { const r = 900 + Math.random() * 1500, a = Math.random() * Math.PI * 2, b = Math.acos(2 * Math.random() - 1); pts.push(r * Math.sin(b) * Math.cos(a), r * Math.sin(b) * Math.sin(a), r * Math.cos(b)); }
+    const geo = new THREE.BufferGeometry(); geo.setAttribute("position", new THREE.Float32BufferAttribute(pts, 3));
+    G3.scene().add(new THREE.Points(geo, new THREE.PointsMaterial({color: 0x7fb8d8, size: 1.6, transparent: true, opacity: 0.55, depthWrite: false})));
+    // coloured clouds of light: the nebula
+    const CLOUD = ["#1f6fd6", "#16b3a4", "#7a3fd1", "#c97a2a", "#1aa0d8", "#9a2f7a"];
+    for (let i = 0; i < 16; i++) {
+      const m = new THREE.Sprite(new THREE.SpriteMaterial({map: GLOW, color: CLOUD[i % CLOUD.length], transparent: true, opacity: 0.07 + Math.random() * 0.05, blending: THREE.AdditiveBlending, depthWrite: false}));
+      const r = 80 + Math.random() * 260, a = Math.random() * Math.PI * 2, b = Math.acos(2 * Math.random() - 1), sc = 380 + Math.random() * 520;
+      m.position.set(r * Math.sin(b) * Math.cos(a), r * Math.sin(b) * Math.sin(a), r * Math.cos(b)); m.scale.set(sc, sc, 1); m.renderOrder = -1;
+      G3.scene().add(m);
+    }
+    if (!reduce) (function pulse(t) { if (hovered && hovered.__glow) { const s = hovered.__size * (7.5 + Math.sin(t / 260) * 1.4); hovered.__glow.scale.set(s, s, 1); } requestAnimationFrame(pulse); })(0);
+    setTimeout(() => G3.zoomToFit(reduce ? 0 : 900, 30), 1600);
+  }
+  G3.width(stage.clientWidth).height(stage.clientHeight).graphData({nodes, links: ls});
+  if (selected) { const n = G3.graphData().nodes.find(x => x.id === selected); if (n) setTimeout(() => setHover(n, true), 50); }
+}
+function setHover(n, sticky) {
+  if (!G3) return;
+  hovered = n || (selected ? G3.graphData().nodes.find(x => x.id === selected) : null);
+  nbrs = new Set(); hotLinks = new Set();
+  if (hovered) { nbrs.add(hovered.id); G3.graphData().links.forEach(l => { const s = l.source.id || l.source, t = l.target.id || l.target; if (s === hovered.id || t === hovered.id) { nbrs.add(s); nbrs.add(t); hotLinks.add(l); } }); }
+  G3.graphData().nodes.forEach(d => {
+    if (!d.__core) return;
+    const on = !hovered || nbrs.has(d.id), me = hovered && d.id === hovered.id;
+    d.__core.material.opacity = on ? 0.95 : 0.12;
+    d.__glow.material.opacity = me ? 1 : on ? (hovered ? 0.85 : 0.7) : 0.05;
+    const s = d.__size * (me ? 7.5 : 4); d.__glow.scale.set(s, s, 1);
+    if (d.__label) d.__label.material.opacity = on ? 1 : 0.15;
+  });
+  G3.linkWidth(G3.linkWidth()).linkVisibility(G3.linkVisibility()).linkDirectionalParticles(G3.linkDirectionalParticles());
+}
+function clickNode(n) {
+  selected = n.id;
+  if (n.k === "country") { const was = focusCountry; focusCountry = n.id.slice(2); if (was !== focusCountry) buildGraph(); }
+  panel(nodeById[n.id] || n); setHover(n, true);
+  const d = 150, r = Math.hypot(n.x, n.y, n.z) || 1, f = 1 + d / r;
+  G3.cameraPosition({x: n.x * f, y: n.y * f, z: n.z * f}, n, reduce ? 0 : 1200);
+}
+// full screen: the network and its panel together
+$("#fs").onclick = () => { const v = $("#v-net"); if (!document.fullscreenElement) (v.requestFullscreen ? v.requestFullscreen() : v.webkitRequestFullscreen && v.webkitRequestFullscreen()); else document.exitFullscreen(); };
+document.addEventListener("fullscreenchange", () => {
+  $("#fs span").textContent = document.fullscreenElement ? "Exit full screen" : "Full screen";
+  setTimeout(() => { if (USE3D && G3) G3.width($("#netstage").clientWidth).height($("#netstage").clientHeight); else buildGraph(); }, 120);
+});
 const nodeById = Object.fromEntries(D.nodes.map(n => [n.id, n]));
 const COL = {country: 0.86, memberstate: 0.06, institution: 0.34, agency: 0.6, sector: 0.6, framework: 0.97};
 function visibleNode(n) {
@@ -426,6 +547,11 @@ function buildGraph() {
   const W = $("#netstage").clientWidth, H = $("#netstage").clientHeight;
   const r0 = d3.scaleSqrt().domain([0, d3.max(nodes.filter(n => n.k !== "memberstate"), n => n.v) || 1]).range([3, 26]);
   const r = v => r0(v); const rn = d => d.k === "memberstate" ? Math.min(14, 3 + r0(d.v || 0) * 0.4) : r0(d.v || 0);
+  if (USE3D) {
+    const instV = nodes.filter(n => n.k === "institution").map(n => n.v).sort((a, b) => b - a), cut = instV[Math.min(14, instV.length - 1)] || 0;
+    render3D(nodes, ls, rn, d => d.k === "country" || d.k === "memberstate" || (d.k === "institution" && d.v >= cut) || d.k === "agency" || (d.k === "sector" && focusCountry));
+    return;
+  }
   const w = d3.scaleSqrt().domain([0, d3.max(ls, l => l.v) || 1]).range([0.4, 6]);
   gl.selectAll("*").remove(); gn.selectAll("*").remove();
   const link = gl.selectAll("line").data(ls).join("line").attr("class", "link")
@@ -647,8 +773,15 @@ bundle = {"generated": generated, "built": TODAY.isoformat(), "site": TRACKER_SI
 d3 = REF / "d3.min.js"
 if not d3.exists():
     d3.write_bytes(get("https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"))
+LIBS = {"three.min.js": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js",
+        "3d-force-graph.min.js": "https://cdn.jsdelivr.net/npm/3d-force-graph@1.73.4/dist/3d-force-graph.min.js"}
+for name, url in LIBS.items():
+    if not (REF / name).exists():
+        (REF / name).write_bytes(get(url))
 html = (TEMPLATE.replace("/*__DATA__*/null", json.dumps(bundle, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/"))
-                .replace("/*__D3__*/", d3.read_text(encoding="utf-8")))
+                .replace("/*__D3__*/", d3.read_text(encoding="utf-8"))
+                .replace("/*__THREE__*/", (REF / "three.min.js").read_text(encoding="utf-8").replace("console.warn('Scripts", "void('Scripts", 1))
+                .replace("/*__FG3D__*/", (REF / "3d-force-graph.min.js").read_text(encoding="utf-8")))
 (SITE / "index.html").write_text(html, encoding="utf-8")
 print(f"site/index.html {len(html.encode()) / 1e6:.2f} MB | {len(nodes)} nodes, {len(links)} links, {len(deals)} deals, "
       f"{len(cofin)} co-financed projects, {len(events)} events, {len(warnings)} warnings")

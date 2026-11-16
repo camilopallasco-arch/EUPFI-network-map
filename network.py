@@ -465,8 +465,9 @@ svg text{font-family:var(--sans)}
 .ev.up .badge{border-color:var(--accent);color:var(--accent)}
 .ev a{color:var(--accent);font-size:12.5px}
 .warn{font-size:12px;color:#ffc9a8;border:1px dashed #6b3a28;padding:6px 8px;margin-top:8px}
-.about{padding:24px;max-width:860px;overflow:auto;height:100%}
-.actors{list-style:none;padding:0;margin:4px 0 14px;columns:2 280px;column-gap:28px}
+.about{padding:24px 32px;overflow:auto;height:100%}
+.about > p,.about > ul:not(.actors),.about > h2:not(#actors){max-width:860px}
+.actors{list-style:none;padding:0;margin:4px 0 14px;columns:4 300px;column-gap:36px}
 .actors li{break-inside:avoid;padding:3px 0;border-bottom:1px solid var(--line);font-size:13px;display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
 .actors li .amt{margin-left:auto}
 .about p,.about li{color:var(--muted)}
@@ -559,7 +560,7 @@ const minWrap = document.createElement("label"); minWrap.className = "ctl";
 minWrap.innerHTML = `Hide links under <select id="minv"><option value="0">€0</option><option value="1000000" selected>€1 m</option><option value="10000000">€10 m</option><option value="50000000">€50 m</option></select>`;
 lay.append(minWrap); $("#minv").onchange = buildGraph;
 $("#netlegend").innerHTML = Object.entries(KIND).map(([k,v]) => `<span><i class="sw" style="background:${k === "country" ? css("--waemu") : v.c()}"></i>${v.label}</span>`).join("") +
-  (USE3D ? `<span>Drag to rotate, scroll to zoom, hover to light up an actor, click for details.</span>` : `<span>Size and line width follow euros. Drag a dot to pin it, double-click to release.</span>`);
+  (USE3D ? `<span>Drag to rotate, scroll to zoom, hover to light up an actor, click for details. Grey lines: amount not published.</span>` : `<span>Size and line width follow euros. Drag a dot to pin it, double-click to release.</span>`);
 
 const svg = d3.select("#net"), g = svg.append("g"), gl = g.append("g"), gn = g.append("g");
 const zoom = d3.zoom().scaleExtent([0.2, 6]).on("zoom", e => g.attr("transform", e.transform));
@@ -615,7 +616,7 @@ function render3D(nodes, ls, rn, labelled) {
   nodes.forEach(n => { const p = prev[n.id]; if (p && p.x !== undefined) { n.x = n.fx = p.x; n.y = n.fy = p.y; n.z = n.fz = p.z; } });
   const hub = nodes.filter(n => groupOf(n) === "pfi").sort((a, b) => b.v - a.v)[0];   // the largest national institution (AFD) sits at the centre
   if (hub) { const [cx, cy, cz] = GROUP_POS.pfi; hub.x = hub.fx = cx; hub.y = hub.fy = cy; hub.z = hub.fz = cz; }
-  ls.forEach(l => { const s = nodeById[l.source], t = nodeById[l.target]; l.col = l.co ? "#f2e6ff" : l.cs ? css("--k-sec") : s && s.k === "institution" ? KIND.institution.c(s.t) : (s && s.k === "memberstate" && t && t.k === "agency") ? css("--k-ag") : "#6f8f9c"; });
+  ls.forEach(l => { const s = nodeById[l.source], t = nodeById[l.target]; l.col = l.co ? "#f2e6ff" : (!l.v && !l.cs && !(t && t.k === "framework") && !(s && s.k === "memberstate" && t && t.k === "agency")) ? "#7f8c96" : l.cs ? css("--k-sec") : s && s.k === "institution" ? KIND.institution.c(s.t) : (s && s.k === "memberstate" && t && t.k === "agency") ? css("--k-ag") : "#6f8f9c"; });
   if (!G3) {
     G3 = ForceGraph3D({controlType: "orbit"})(el)
       .backgroundColor("#02060b").showNavInfo(false)
@@ -704,12 +705,12 @@ function buildGraph() {
   const minv = +$("#minv").value;
   const ns = D.nodes.filter(visibleNode).map(n => Object.assign({}, n));
   const ok = new Set(ns.map(n => n.id));
-  let ls = D.links.filter(l => ok.has(l.s) && ok.has(l.t) && (l.t.startsWith("f:") || l.s.startsWith("f:") || (l.s.startsWith("m:") && (l.t.startsWith("a:") || l.t.startsWith("x:"))) || l.s.startsWith("x:") || l.t.startsWith("x:") || l.co || l.v >= minv))
+  let ls = D.links.filter(l => ok.has(l.s) && ok.has(l.t) && (l.t.startsWith("f:") || l.s.startsWith("f:") || (l.s.startsWith("m:") && (l.t.startsWith("a:") || l.t.startsWith("x:"))) || l.s.startsWith("x:") || l.t.startsWith("x:") || l.co || !l.v || l.v >= minv))
     .filter(l => !(focusCountry && !layers.sector && l.t.startsWith("s:")))   // in country focus, sectors connect to that country only
     .map(l => ({source:l.s, target:l.t, v:l.v, n:l.n, co:l.co, own:l.own}));
   if (focusCountry) Object.entries(D.csec[focusCountry] || {}).forEach(([sec, v]) => { if (ok.has("s:" + sec)) ls.push({source:"c:" + focusCountry, target:"s:" + sec, v, n:0, cs:true}); });
   const used = new Set(ls.flatMap(l => [l.source, l.target]));
-  const nodes = ns.filter(n => used.has(n.id) || n.k === "country");
+  const nodes = ns.filter(n => used.has(n.id) || n.k === "country" || n.k === "memberstate" || n.k === "institution");
   const W = $("#netstage").clientWidth, H = $("#netstage").clientHeight;
   const r0 = d3.scaleSqrt().domain([0, d3.max(nodes, n => n.v) || 1]).range([1.6, 30]);   // area proportional to euros
   const r = v => r0(v); const rn = d => r0(d.v || 0);

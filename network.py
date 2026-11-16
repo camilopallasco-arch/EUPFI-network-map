@@ -209,6 +209,31 @@ def contract_date(t):
         return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
     m = re.search(r"(\d{2})/(\d{2})/(\d{4})", t or "")
     return f"{m.group(3)}-{m.group(2)}-{m.group(1)}" if m else ""
+# European parent groups: subsidiaries and brand names that appear in contract awards -> (group, member state)
+PARENTS = [(r"EIFFAGE|CLEMESSY", "Eiffage", "FR"), (r"SOGEA|SATOM|VINCI|EUROVIA|CEGELEC|OMEXOM|ENTREPOSE", "Vinci (Sogea-Satom)", "FR"),
+           (r"\bSUEZ\b|DEGREMONT", "Suez", "FR"), (r"VEOLIA|\bOTV\b|\bSADE\b", "Veolia", "FR"), (r"BOUYGUES|\bCOLAS\b|\bETDE\b", "Bouygues (Colas)", "FR"),
+           (r"RAZEL|FAYAT", "Fayat (Razel-Bec)", "FR"), (r"\bENGIE\b|COFELY|INEO", "Engie", "FR"), (r"\bSPIE\b", "Spie", "FR"),
+           (r"SCHNEIDER", "Schneider Electric", "FR"), (r"SAGEMCOM", "Sagemcom", "FR"), (r"VERGNET", "Vergnet", "FR"), (r"\bEGIS\b", "Egis", "FR"),
+           (r"ARTELIA", "Artelia", "FR"), (r"\bSETEC\b", "Setec", "FR"), (r"\bBRL\b", "BRL Ingénierie", "FR"), (r"BOLLORE", "Bolloré", "FR"),
+           (r"\bRMT\b", "RMT Industrie & Elektrotechnik", "DE"), (r"SIEMENS", "Siemens", "DE"), (r"STRABAG", "Strabag", "AT"),
+           (r"BESIX", "Besix", "BE"), (r"JAN DE NUL", "Jan De Nul", "BE"), (r"\bDEME\b", "DEME", "BE"), (r"TRACTEBEL", "Tractebel (Engie)", "BE"),
+           (r"BOSKALIS", "Boskalis", "NL"), (r"VAN OORD", "Van Oord", "NL"), (r"HASKONING", "Royal HaskoningDHV", "NL"), (r"ARCADIS", "Arcadis", "NL"),
+           (r"\bSENER\b", "Sener", "ES"), (r"ELECNOR", "Elecnor", "ES"), (r"ISOLUX", "Isolux Corsán", "ES"),
+           (r"SALINI|WEBUILD|IMPREGILO", "Webuild", "IT"), (r"GHELLA", "Ghella", "IT"), (r"MOTA[- ]ENGIL", "Mota-Engil", "PT")]
+def contract_members(name, eu_ms, plain):
+    """Split a consortium name into its partners; return ([(group, member state), ...], number of partners).
+    Partners found in PARENTS get their group and nationality; a single firm not in PARENTS keeps its name and the dataset's nationality."""
+    clean = re.sub(r"\b(GROUPEMENT|GPT|CONSORTIUM|JOINT VENTURE|JV)\b\s*:?", " ", plain(name))
+    parts = [p.strip() for p in re.split(r"\s*/\s*|\s+\+\s+|\s+-\s+|;|\s+ET\s+", clean) if p.strip()]
+    found = []
+    for p in parts:
+        hit = next(((g, m) for rx, g, m in PARENTS if re.search(rx, p)), None)
+        if hit and hit not in found:
+            found.append(hit)
+    if found:
+        return found, max(len(parts), len(found))
+    return [(re.sub(r"\s+", " ", name.strip())[:90], eu_ms)], 1
+
 contracts = []
 cpath = DATA / "afd_contracts.json"
 if cpath.exists():
@@ -242,14 +267,17 @@ if cpath.exists():
 # contractor nodes: one per firm, linked to AFD (financier), to the country of the contract and to the firm's member state
 firm_key = lambda f: "x:" + re.sub(r"[^a-z0-9]+", "-", plain(f).lower()).strip("-")[:60]
 for ct in contracts:
-    fid = firm_key(ct["f"])
-    node(fid, "contractor", ct["f"], ms=ct["ms"])
-    nodes[fid]["v"] += ct["v"]
-    l = links[("i:afd", fid)] if "i:afd" in nodes else None
-    if l is not None:
-        l["v"] += ct["v"]; l["n"] += 1
-    if ("c:" + ct["c"]) in nodes:
-        l = links[(fid, "c:" + ct["c"])]; l["v"] += ct["v"]; l["n"] += 1
+    members, n_parts = contract_members(ct["f"], ct["ms"], plain)
+    ct["g"] = [[g, m] for g, m in members]; ct["share"] = round(1 / n_parts, 4); ct["parts"] = n_parts
+    for g, m in members:
+        fid = firm_key(g)
+        node(fid, "contractor", g, ms=m)
+        val = ct["v"] / n_parts
+        nodes[fid]["v"] += val
+        if "i:afd" in nodes:
+            l = links[("i:afd", fid)]; l["v"] += val; l["n"] += 1
+        if ("c:" + ct["c"]) in nodes:
+            l = links[(fid, "c:" + ct["c"])]; l["v"] += val; l["n"] += 1
 for nid, n in list(nodes.items()):
     if n["k"] == "contractor" and n.get("ms"):
         node("m:" + n["ms"], "memberstate", MS_NAMES.get(n["ms"], n["ms"]))
@@ -807,10 +835,13 @@ function panel(n) {
     const msn = nb.find(([m]) => m.k === "memberstate");
     html += `<p class="hint">${msn ? `A public agency of ${esc(msn[0].l)}. ` : ""}EU money (Commission, EU Trust Fund for Africa, blending, EU-AITF) entrusted to this agency to implement; counted under the EU, not under ${msn ? esc(msn[0].l) : "the member state"}. Its own national budget is not in this network.</p><h3>From</h3>${bars(grp("institution"), css("--t-eu"))}<h3>Largest EU-funded deals it implements</h3>${dealList(D.deals.filter(d => d.g === id))}`;
   } else if (n.k === "contractor") {
-    const cs = (D.contracts || []).filter(c => "x:" + c.f.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60) === n.id);
-    html += `<p class="hint">A firm from ${esc((D.contracts.find(c => c.f === n.l) || {}).nat || n.ms)} that won contracts financed by AFD (with EU financial participation) in Franc Zone countries.</p><h3>Contracts (${cs.length})</h3>` +
-      cs.sort((a, b) => b.v - a.v).map(c => `<div class="deal">${esc(c.o || c.p)}<div class="meta">${esc((D.countries[c.c] || {}).n || c.c)}${c.d ? ", signed " + esc(c.d) : ""} · project ${esc(c.p)} (${esc(c.proj)}) · <span class="amt">${fmt(c.v)}</span>${c.flag ? " · amount read as euros (entered in the thousand-euro column)" : ""}</div></div>`).join("") +
-      `<p class="hint">Source: AFD open data, contracts financed by AFD with EU financial participation.</p>`;
+    const key = g => "x:" + g.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60);
+    const cs = (D.contracts || []).filter(c => (c.g || []).some(([g]) => key(g) === n.id));
+    const ctry = [...new Set(cs.map(c => (D.countries[c.c] || {}).n || c.c))];
+    html += `<p class="hint">${esc(n.l)} won ${cs.length} contract${cs.length === 1 ? "" : "s"} financed by AFD (with EU financial participation) in ${ctry.map(esc).join(", ")}, alone or in consortia; subsidiaries are grouped under their parent company.</p><h3>Contracts</h3>` +
+      cs.sort((a, b) => b.v - a.v).map(c => `<div class="deal">${esc(c.o || c.p)}<div class="meta">${esc((D.countries[c.c] || {}).n || c.c)}${c.d ? ", signed " + esc(c.d) : ""} · project ${esc(c.p)} (${esc(c.proj)})</div>
+        <div class="meta">Contract holder: ${esc(c.f)} · <span class="amt">${fmt(c.v)}</span>${c.parts > 1 ? ` · ${c.parts} partners: share credited here ${fmt(c.v / c.parts)} (estimate)` : ""}${c.flag ? " · amount read as euros (entered in the thousand-euro column)" : ""}</div></div>`).join("") +
+      `<p class="hint">Source: AFD open data, contracts financed by AFD with EU financial participation. This dataset does not cover contracts financed by other lenders (for example the AfDB).</p>`;
   } else if (n.k === "framework") {
     html += `<p class="hint">${esc(n.fk)}. Frameworks carry no amounts in this network: the money appears in the deals of the institutions involved.</p><h3>Linked to</h3>` +
       nb.map(([m]) => `<div class="deal">${esc(m.l)} <span class="meta">${esc(KIND[m.k].label)}</span></div>`).join("") + (n.src ? `<p><a href="${esc(n.src)}" target="_blank" rel="noopener">Source</a></p>` : "");

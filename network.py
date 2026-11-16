@@ -471,7 +471,7 @@ function render3D(nodes, ls, rn, labelled) {
   if (!GLOW) GLOW = glowTexture();
   const el = $("#net3d"), stage = $("#netstage");
   const prev = G3 ? Object.fromEntries(G3.graphData().nodes.map(n => [n.id, n])) : {};
-  nodes.forEach(n => { const p = prev[n.id]; if (p) { n.x = p.x; n.y = p.y; n.z = p.z; } });
+  nodes.forEach(n => { const p = prev[n.id]; if (p && p.x !== undefined) { n.x = n.fx = p.x; n.y = n.fy = p.y; n.z = n.fz = p.z; } });
   ls.forEach(l => { const s = nodeById[l.source], t = nodeById[l.target]; l.col = l.cs ? css("--k-sec") : s && s.k === "institution" ? KIND.institution.c(s.t) : (s && s.k === "memberstate" && t && t.k === "agency") ? css("--k-ag") : "#6f8f9c"; });
   if (!G3) {
     G3 = ForceGraph3D({controlType: "orbit"})(el)
@@ -538,9 +538,7 @@ function setHover(n, sticky) {
 function clickNode(n) {
   selected = n.id;
   if (n.k === "country") { const was = focusCountry; focusCountry = n.id.slice(2); if (was !== focusCountry) buildGraph(); }
-  panel(nodeById[n.id] || n); setHover(n, true);
-  const d = 150, r = Math.hypot(n.x, n.y, n.z) || 1, f = 1 + d / r;
-  G3.cameraPosition({x: n.x * f, y: n.y * f, z: n.z * f}, n, reduce ? 0 : 1200);
+  panel(nodeById[n.id] || n); setHover(n, true);   // highlight and details only: the camera stays where it is
 }
 // full screen: the network and its panel together
 $("#fs").onclick = () => { const v = $("#v-net"); if (!document.fullscreenElement) (v.requestFullscreen ? v.requestFullscreen() : v.webkitRequestFullscreen && v.webkitRequestFullscreen()); else document.exitFullscreen(); };

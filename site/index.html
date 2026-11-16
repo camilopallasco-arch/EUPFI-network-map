@@ -92,6 +92,9 @@ svg text{font-family:var(--sans)}
 .ev a{color:var(--accent);font-size:12.5px}
 .warn{font-size:12px;color:#ffc9a8;border:1px dashed #6b3a28;padding:6px 8px;margin-top:8px}
 .about{padding:24px;max-width:860px;overflow:auto;height:100%}
+.actors{list-style:none;padding:0;margin:4px 0 14px;columns:2 280px;column-gap:28px}
+.actors li{break-inside:avoid;padding:3px 0;border-bottom:1px solid var(--line);font-size:13px;display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.actors li .amt{margin-left:auto}
 .about p,.about li{color:var(--muted)}
 .about h2{margin-top:22px}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
@@ -550,6 +553,36 @@ function drawEvents() {
     : `<p class="hint">The tracker's source register appears here once the tracker has run with its new Sources feature.</p>`);
 })();
 
+// ---------- ALL ACTORS, by category and in alphabetical order
+function noAmount(n) {   // why an actor shows no euro amount
+  const out = D.links.filter(l => l.s === n.id).map(l => (D.nodes.find(x => x.id === l.t) || {}).k).filter(k => k !== "framework");
+  if (n.k === "memberstate" && out.length && out.every(k => k === "agency")) return "linked through its implementing agency only (it implements EU money)";
+  if (n.k === "memberstate" || n.k === "institution") return "deals recorded, amounts not published";
+  return "no amount published";
+}
+function actorDirectory() {
+  const MSN = {FR:"France",DE:"Germany",NL:"Netherlands",BE:"Belgium",FI:"Finland",DK:"Denmark",SE:"Sweden",AT:"Austria",ES:"Spain",IT:"Italy",PT:"Portugal",
+    PL:"Poland",CZ:"Czechia",SK:"Slovakia",HR:"Croatia",GR:"Greece",SI:"Slovenia",HU:"Hungary",RO:"Romania",BG:"Bulgaria",EE:"Estonia",LV:"Latvia",LT:"Lithuania",
+    IE:"Ireland",LU:"Luxembourg",EU:"European Union",INT:"Multilateral (EU-majority)",WBTF:"World Bank trust funds"};
+  const abc = (a, b) => a.l.localeCompare(b.l, "fr", {sensitivity: "base"});
+  const N = D.nodes;
+  const cats = [
+    ["Member states and the European Union", "Owners of the institutions below; amounts are the total of their institutions (for the EBRD, the EU-held 54.4%).", N.filter(n => n.k === "memberstate")],
+    ["EU institutions", "", N.filter(n => n.k === "institution" && n.t === "EU institution")],
+    ["Development banks", "", N.filter(n => n.k === "institution" && n.t === "Bilateral development bank")],
+    ["Development finance institutions (DFIs)", "", N.filter(n => n.k === "institution" && n.t === "DFI")],
+    ["Promotional banks", "", N.filter(n => n.k === "institution" && n.t === "NPB")],
+    ["Export credit agencies", "", N.filter(n => n.k === "institution" && n.t === "ECA")],
+    ["Multilateral bank with an EU majority", "", N.filter(n => n.k === "institution" && n.t === "Multilateral")],
+    ["World Bank trust funds financed by European donors", "", N.filter(n => n.k === "institution" && n.t === "World Bank trust fund")],
+    ["Implementing agencies (EU funds)", "Member-state agencies entrusted with EU money; amounts are EU funds they implement, counted under the EU.", N.filter(n => n.k === "agency")],
+    ["Contractors (European firms)", "Firms of EU nationality that won contracts under AFD projects co-financed by the EU; amounts are contract values, not added to any total.", N.filter(n => n.k === "contractor")],
+    ["Recipient countries", "", N.filter(n => n.k === "country")]];
+  return `<h2 id="actors">All actors</h2><p>Every actor in this network, by category and in alphabetical order.</p>` + cats.filter(c => c[2].length).map(([title, note, list]) =>
+    `<h3>${esc(title)} (${list.length})</h3>${note ? `<p class="hint">${esc(note)}</p>` : ""}<ul class="actors">` +
+    list.slice().sort(abc).map(n => `<li><b>${esc(n.l)}</b>${n.ms && n.k !== "memberstate" ? ` <span class="meta">${esc(MSN[n.ms] || n.ms)}</span>` : ""}${n.v ? ` <span class="amt">${fmt(n.v)}</span>` : ` <span class="meta">${esc(noAmount(n))}</span>`}</li>`).join("") + `</ul>`).join("");
+}
+
 // ---------- ABOUT
 $("#about").innerHTML = `<h2>About this tracker</h2>
   <p>The EU-CFA Network tracker shows how European public financial institutions connect, overlap and respond to events in the 14 countries of the CFA franc zone: the eight WAEMU countries in West Africa and the six CEMAC countries in Central Africa (the Comoros are not covered). It is a companion to the EU-CFA Public finance tracker and reads that tracker's data, so both always show the same deals.</p>
@@ -559,7 +592,7 @@ $("#about").innerHTML = `<h2>About this tracker</h2>
   <li>Overlap: for two institutions, the euros both put into the same sector in the same country (the smaller of the two amounts, summed over every shared country and sector).</li>
   <li>Co-financed projects: deals by different institutions in the same country, within three years of each other, whose titles share distinctive words. The shared words are shown as evidence. This is a rule-based match: check the sources before citing a project as co-financed.</li>
   <li>Events: hand-checked, each with its source; the build tests every source link and lists any that fail under Events.</li></ul>
-  <h2>Data</h2><p>Tracker data dated ${esc(D.generated)}; this page built on ${esc(D.built)}. Every deal links to its source record.</p>`;
+  <h2>Data</h2><p>Tracker data dated ${esc(D.generated)}; this page built on ${esc(D.built)}. Every deal links to its source record.</p>` + actorDirectory();
 
 buildGraph();
 addEventListener("resize", () => { clearTimeout(window._rz); window._rz = setTimeout(buildGraph, 300); });

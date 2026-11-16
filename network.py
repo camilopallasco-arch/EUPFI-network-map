@@ -6,11 +6,12 @@ Reads the tracker's data (TRACKER_DATA_URL below, or data/tracker.json) and data
 import csv, json, re, pathlib, urllib.request, datetime, unicodedata, collections
 
 # ---------------------------------------------------------------- settings you can edit
-# Address of your tracker's data file. On GitHub, open data/tracker.json in your tracker repository,
-# click "Raw" and paste that address here. Leave empty to use the copy in data/tracker.json.
-TRACKER_DATA_URL = ""
-# Address of the main tracker website (used for links back to it). Leave empty to hide the link.
+# Address of your EU-CFA Public finance tracker website, for example "https://yourname.github.io/EU-WAEMU-PFI-TRACKER/".
+# This one setting connects the two sites: the network then reads the tracker's own data file (published next to its page)
+# at every build, so both sites always show the same totals.
 TRACKER_SITE_URL = ""
+# Optional: a different address for the tracker's data file. Leave empty to use TRACKER_SITE_URL + "tracker.json".
+TRACKER_DATA_URL = ""
 
 ROOT = pathlib.Path(__file__).resolve().parent
 DATA, SITE, REF = ROOT / "data", ROOT / "site", ROOT / "ref"
@@ -24,21 +25,28 @@ warnings = []
 def get(url, timeout=120):
     return urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=timeout).read()
 
-if TRACKER_DATA_URL:
+DATA_URL = TRACKER_DATA_URL or (TRACKER_SITE_URL.rstrip("/") + "/tracker.json" if TRACKER_SITE_URL else "")
+data_status = "saved"          # "live" when this build read the tracker's current data
+if DATA_URL:
     try:
-        raw = get(TRACKER_DATA_URL)
+        raw = get(DATA_URL)
         json.loads(raw)
         (DATA / "tracker.json").write_bytes(raw)
-        print("downloaded tracker data from", TRACKER_DATA_URL)
+        data_status = "live"
+        print("downloaded tracker data from", DATA_URL)
     except Exception as e:
-        warnings.append(f"Could not download the tracker data ({e}); the last saved copy is used.")
+        warnings.append(f"Could not download the tracker data from {DATA_URL} ({e}); the last saved copy is used, so totals may differ from the tracker.")
+else:
+    warnings.append("Not connected to the tracker: set TRACKER_SITE_URL in network.py. Until then a saved copy of the tracker data is used, so totals may differ from the tracker.")
 if not (DATA / "tracker.json").exists():
     raise SystemExit("No tracker data: set TRACKER_DATA_URL in network.py or upload data/tracker.json")
 T = json.load(open(DATA / "tracker.json", encoding="utf-8"))
 generated = T.get("generated", "")
 
 # ---------------------------------------------------------------- 2. scope: EU public financial institutions and EU-financed World Bank trust funds
-INCLUDED_TYPES = {"DFI", "Bilateral development bank", "NPB", "ECA", "EU institution", "World Bank trust fund"}
+INCLUDED_TYPES = {"DFI", "Bilateral development bank", "NPB", "ECA", "EU institution", "World Bank trust fund", "Multilateral"}
+EBRD_EU_SHARE = 0.544   # EU (3.03%), EIB (3.03%) and EU27 member states (ca. 48.4%): European Commission, COM(2024)42
+EBRD_SHARE_SRC = "https://eumonitor.eu/9353000/1/j4nvirkkkr58fyw_j9vvik7m1c3gyxp/vma3gbgih4zm"
 INST = {i["institution_id"]: i for i in T["institutions"] if i["type"] in INCLUDED_TYPES}
 COUNTRIES = T["countries"]
 MS_NAMES = {"FR": "France", "DE": "Germany", "NL": "Netherlands", "BE": "Belgium", "FI": "Finland", "DK": "Denmark", "SE": "Sweden",
@@ -61,6 +69,44 @@ for a in T["allocations"]:
     if a.get("attribution_method") == "equal_split_estimate":
         d["e"] = True
 deals = {k: v for k, v in deals.items()}
+
+# ---------------------------------------------------------------- 2b. EBRD: which projects involve EU or member-state money (from the EBRD's project summary pages)
+EU_ACTORS = [("eu-intpa", r"European Union|\bEU\b|EU's|Africa Investment Platform|\bAIP\b|EFSD|Global Gateway|European Commission|Team Europe"),
+             ("eib", r"European Investment Bank|\bEIB\b"), ("afd", r"Agence Fran[cç]aise|\bAFD\b"), ("proparco", r"Proparco"),
+             ("kfw-db", r"\bKfW\b"), ("deg", r"\bDEG\b"), ("fmo", r"\bFMO\b"), ("bio", r"\bBIO\b"), ("finnfund", r"Finnfund"),
+             ("swedfund", r"Swedfund"), ("ifu", r"\bIFU\b|Impact Fund Denmark"), ("cofides", r"COFIDES"), ("oeeb", r"OeEB")]
+MONEY = re.compile(r"co-?financ|grant|loan|fund|financ|guarantee|provided|contribut|blend|investment from|support from|alongside|parallel", re.I)
+STANDARD_ONLY = re.compile(r"Directive|Taxonomy|Best Available|in line with the requirements|EU standards|EU requirements|EU regulation", re.I)
+psd_cache = DATA / "ebrd_psd.json"
+psd = json.load(open(psd_cache, encoding="utf-8")) if psd_cache.exists() else {}
+def html_text(s):
+    return re.sub(r"\s+", " ", re.sub("<[^>]+>", " ", re.sub(r"<script.*?</script>|<style.*?</style>", "", s, flags=re.S)))
+for d in deals.values():
+    if d["i"] != "ebrd":
+        continue
+    m = re.search(r"EBRD-(\d+)", d["id"])
+    if not m:
+        continue
+    pid = m.group(1)
+    try:
+        t = html_text(get(f"https://www.ebrd.com/work-with-us/projects/psd/{pid}.html", 60).decode("utf-8", "replace"))
+        import html as _h
+        t = _h.unescape(t)
+        start = t.find("Project Description")            # read only the project's own text, not the site's menus
+        t = t[start:] if start >= 0 else ""
+        found = {}
+        for sent in re.split(r"(?<=[.;])\s+", t):
+            if len(sent) > 450 or not MONEY.search(sent) or STANDARD_ONLY.search(sent):
+                continue
+            for iid, rx in EU_ACTORS:
+                if re.search(rx, sent) and iid not in found:
+                    found[iid] = sent.strip()[:320]
+        psd[pid] = {"url": f"https://www.ebrd.com/work-with-us/projects/psd/{pid}.html", "eu": found, "checked": TODAY.isoformat()}
+    except Exception as e:
+        warnings.append(f"EBRD project page {pid} could not be read ({e}); the last saved reading is used.")
+    if pid in psd:
+        d["eu"] = psd[pid]["eu"]; d["psd"] = psd[pid]["url"]
+json.dump(psd, open(psd_cache, "w", encoding="utf-8"), ensure_ascii=False, indent=0)
 
 # ---------------------------------------------------------------- 3. network: nodes and weighted links
 nodes, links = {}, collections.defaultdict(lambda: {"v": 0.0, "n": 0})
@@ -87,15 +133,23 @@ for d in deals.values():
         l = links[("i:" + d["i"], "a:" + d["g"])]; l["v"] += d["v"]; l["n"] += 1
 for nid, n in list(nodes.items()):
     if n["k"] == "institution" and n.get("ms"):
-        owner = "EU" if n["ms"] == "WBTF" else n["ms"]   # World Bank trust funds financed by European donors hang off the EU, not a separate ball
+        owner = "EU" if n["ms"] in ("WBTF", "INT") else n["ms"]   # World Bank trust funds and the EBRD hang off the EU, not a separate ball
         node("m:" + owner, "memberstate", MS_NAMES.get(owner, owner))
-        nodes["m:" + owner]["v"] += n["v"]
-        l = links[("m:" + owner, nid)]; l["v"] += n["v"]; l["n"] += 1
+        share = EBRD_EU_SHARE if n["ms"] == "INT" else 1.0          # the EBRD: only the EU-held share of its capital (54.4%)
+        nodes["m:" + owner]["v"] += n["v"] * share
+        l = links[("m:" + owner, nid)]; l["v"] += n["v"] * share; l["n"] += 1
+        if n["ms"] == "INT":
+            l["own"] = round(EBRD_EU_SHARE * 100, 1)
 # each implementing agency belongs to a member state: a "belongs to" link without amount (the money it implements is EU money)
 for nid, n in list(nodes.items()):
     if n["k"] == "agency" and n.get("ms") and n["ms"] != "EU":
         node("m:" + n["ms"], "memberstate", MS_NAMES.get(n["ms"], n["ms"]))
         links[("m:" + n["ms"], nid)]["n"] += 1
+# EBRD co-financing: a dashed link to each EU institution its project pages name as a source of money
+for d in deals.values():
+    for iid in (d.get("eu") or {}):
+        if ("i:" + iid) in nodes and "i:ebrd" in nodes:
+            l = links[("i:ebrd", "i:" + iid)]; l["n"] += 1; l["co"] = True
 # frameworks (programmes): participants and countries, no amounts added up
 for p in T.get("programmes", []):
     fid = "f:" + p["programme_id"]
@@ -334,7 +388,7 @@ TEMPLATE = r'''<!doctype html>
 :root{
   --bg:#040a0f; --panel:#08151d; --panel2:#0a1c26; --ink:#d9f4ff; --muted:#8db1c0; --dim:#56798a; --line:#163746; --line-hi:#2a6a80;
   --accent:#40e8ff; --waemu:#ffbf5c; --cemac:#ff9a7a;
-  --t-dfi:#3aa6ff; --t-bdb:#ff8c42; --t-npb:#2dffc8; --t-eca:#ff3d8e; --t-eu:#ffd84a; --t-wbtf:#e0c8a0;
+  --t-dfi:#3aa6ff; --t-bdb:#ff8c42; --t-npb:#2dffc8; --t-eca:#ff3d8e; --t-eu:#ffd84a; --t-wbtf:#e0c8a0; --t-mdb:#b77dff;
   --k-ms:#ffffff; --k-sec:#7be3c0; --k-ag:#d8b4ff; --k-fw:#9fb4c4; --k-ct:#ff9e6b;
   --c-mon:#ffd84a; --c-pol:#ff6b6b; --c-eu:#40e8ff; --c-fin:#7be36b; --c-meet:#c592ff;
   --mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace; --sans:"IBM Plex Sans","Segoe UI",system-ui,-apple-system,sans-serif;
@@ -472,8 +526,8 @@ const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).
 const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const fmt = v => v >= 1e9 ? "€" + (v/1e9).toFixed(1) + " bn" : v >= 1e6 ? "€" + (v/1e6).toFixed(v >= 1e8 ? 0 : 1) + " m" : v >= 1e3 ? "€" + Math.round(v/1e3) + " k" : "€" + Math.round(v || 0);
 const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
-const TYPEVAR = {"DFI":"--t-dfi","Bilateral development bank":"--t-bdb","NPB":"--t-npb","ECA":"--t-eca","EU institution":"--t-eu","World Bank trust fund":"--t-wbtf"};
-const TYPELABEL = {"DFI":"DFI","Bilateral development bank":"Development bank","NPB":"Promotional bank","ECA":"Export credit agency","EU institution":"EU institution","World Bank trust fund":"World Bank trust fund (EU-financed)"};
+const TYPEVAR = {"DFI":"--t-dfi","Bilateral development bank":"--t-bdb","NPB":"--t-npb","ECA":"--t-eca","EU institution":"--t-eu","World Bank trust fund":"--t-wbtf","Multilateral":"--t-mdb"};
+const TYPELABEL = {"DFI":"DFI","Bilateral development bank":"Development bank","NPB":"Promotional bank","ECA":"Export credit agency","EU institution":"EU institution","World Bank trust fund":"World Bank trust fund (EU-financed)","Multilateral":"EBRD (EU-majority multilateral)"};
 const instName = id => (D.inst[id] || {}).n || id;
 const tip = $("#tip");
 function showTip(e, html) { tip.innerHTML = html; tip.hidden = false; tip.style.left = Math.min(e.clientX + 14, innerWidth - 320) + "px"; tip.style.top = (e.clientY + 14) + "px"; }
@@ -558,7 +612,7 @@ function render3D(nodes, ls, rn, labelled) {
   nodes.forEach(n => { const p = prev[n.id]; if (p && p.x !== undefined) { n.x = n.fx = p.x; n.y = n.fy = p.y; n.z = n.fz = p.z; } });
   const hub = nodes.filter(n => groupOf(n) === "pfi").sort((a, b) => b.v - a.v)[0];   // the largest national institution (AFD) sits at the centre
   if (hub) { const [cx, cy, cz] = GROUP_POS.pfi; hub.x = hub.fx = cx; hub.y = hub.fy = cy; hub.z = hub.fz = cz; }
-  ls.forEach(l => { const s = nodeById[l.source], t = nodeById[l.target]; l.col = l.cs ? css("--k-sec") : s && s.k === "institution" ? KIND.institution.c(s.t) : (s && s.k === "memberstate" && t && t.k === "agency") ? css("--k-ag") : "#6f8f9c"; });
+  ls.forEach(l => { const s = nodeById[l.source], t = nodeById[l.target]; l.col = l.co ? "#f2e6ff" : l.cs ? css("--k-sec") : s && s.k === "institution" ? KIND.institution.c(s.t) : (s && s.k === "memberstate" && t && t.k === "agency") ? css("--k-ag") : "#6f8f9c"; });
   if (!G3) {
     G3 = ForceGraph3D({controlType: "orbit"})(el)
       .backgroundColor("#02060b").showNavInfo(false)
@@ -647,9 +701,9 @@ function buildGraph() {
   const minv = +$("#minv").value;
   const ns = D.nodes.filter(visibleNode).map(n => Object.assign({}, n));
   const ok = new Set(ns.map(n => n.id));
-  let ls = D.links.filter(l => ok.has(l.s) && ok.has(l.t) && (l.t.startsWith("f:") || l.s.startsWith("f:") || (l.s.startsWith("m:") && (l.t.startsWith("a:") || l.t.startsWith("x:"))) || l.s.startsWith("x:") || l.t.startsWith("x:") || l.v >= minv))
+  let ls = D.links.filter(l => ok.has(l.s) && ok.has(l.t) && (l.t.startsWith("f:") || l.s.startsWith("f:") || (l.s.startsWith("m:") && (l.t.startsWith("a:") || l.t.startsWith("x:"))) || l.s.startsWith("x:") || l.t.startsWith("x:") || l.co || l.v >= minv))
     .filter(l => !(focusCountry && !layers.sector && l.t.startsWith("s:")))   // in country focus, sectors connect to that country only
-    .map(l => ({source:l.s, target:l.t, v:l.v, n:l.n}));
+    .map(l => ({source:l.s, target:l.t, v:l.v, n:l.n, co:l.co, own:l.own}));
   if (focusCountry) Object.entries(D.csec[focusCountry] || {}).forEach(([sec, v]) => { if (ok.has("s:" + sec)) ls.push({source:"c:" + focusCountry, target:"s:" + sec, v, n:0, cs:true}); });
   const used = new Set(ls.flatMap(l => [l.source, l.target]));
   const nodes = ns.filter(n => used.has(n.id) || n.k === "country");
@@ -721,7 +775,13 @@ function panel(n) {
   let html = `<h2>${esc(n.l)}</h2><div class="meta">${esc(KIND[n.k].label)}${n.t ? " · " + esc(TYPELABEL[n.t]) : ""}</div>`;
   if (n.v) html += `<div class="big">${fmt(n.v)}</div><div class="hint">attributed to Franc Zone countries since 1999</div>`;
   const grp = k => nb.filter(([m, l]) => m.k === k && l.v).sort((a, b) => b[1].v - a[1].v).slice(0, 10).map(([m, l]) => [m.l.length > 40 ? m.l.slice(0, 38) + "…" : m.l, l.v]);
-  if (n.k === "institution") {
+  if (n.k === "institution" && id === "ebrd") {
+    const ds = D.deals.filter(d => d.i === "ebrd"), withEU = ds.filter(d => d.eu && Object.keys(d.eu).length), noEU = ds.filter(d => !(d.eu && Object.keys(d.eu).length));
+    html += `<h3>EU capital in the EBRD</h3><p class="hint">The EU (3.03%), the EIB (3.03%) and the 27 member states (about 48.4%) together hold ${(D.ebrd.share * 100).toFixed(1)}% of the EBRD's capital, which backs all its lending. The link to the European Union is weighted by that share: ${fmt(n.v * D.ebrd.share)} of ${fmt(n.v)}, an estimate based on shareholding. <a href="${esc(D.ebrd.src)}" target="_blank" rel="noopener" style="color:var(--accent)">Source</a></p>
+      <h3>Projects naming EU or member-state money (${withEU.length})</h3>` + (withEU.length ? withEU.map(d => `<div class="deal"><b>${esc(d.t)}</b> <span class="amt">${fmt(d.v)}</span><div class="meta">EU side named: ${Object.keys(d.eu).map(k => esc(shortName(instName(k)))).join(", ")}</div>` +
+        [...new Set(Object.values(d.eu))].slice(0, 2).map(q => `<div class="meta">“${esc(q)}”</div>`).join("") + `<div class="meta"><a href="${esc(d.psd)}" target="_blank" rel="noopener">EBRD project page</a></div></div>`).join("") : `<p class="hint">None.</p>`) +
+      `<h3>Projects with no EU money named (${noEU.length})</h3><p class="hint">Financed from the EBRD's own resources; EU capital is involved only through the shareholding above.</p>` + dealList(noEU, 20);
+  } else if (n.k === "institution") {
     const ds = D.deals.filter(d => d.i === id);
     html += `<h3>Countries</h3>${bars(grp("country"), css("--waemu"))}<h3>Sectors</h3>${bars(grp("sector"), css("--k-sec"))}`;
     if (grp("agency").length) html += `<h3>EU funds entrusted to implementing agencies</h3>${bars(grp("agency"), css("--k-ag"))}`;
@@ -757,6 +817,9 @@ function netIntro() {
   const tot = D.deals.reduce((s, d) => s + d.v, 0);
   $("#netpanel").innerHTML = `<h2>The network</h2><p class="hint">European public financial institutions (development banks, DFIs, promotional banks, export credit agencies, EU institutions) and World Bank trust funds financed by European donors, linked to the 14 CFA franc countries they finance since 1999, to their member states, and to the agencies that implement EU funds.</p>
     <div class="big">${fmt(tot)}</div><div class="hint">${D.deals.length.toLocaleString("en")} deals from ${Object.keys(D.inst).length} institutions in scope</div>
+    <div class="hint">Same total and rules as the tracker's header (investment and development finance since 1999; EU humanitarian aid and foreign-policy grants excluded). ${D.data_status === "live"
+      ? `Tracker data of ${esc(D.generated)}, read at this build.`
+      : `<span style="color:#ffc9a8">Using a saved copy of the tracker data of ${esc(D.generated)}: this site is not connected to the tracker, so its total may differ. Set TRACKER_SITE_URL in network.py.</span>`}</div>
     <h3>How to read it</h3><p class="hint">Click any dot for its details and sources. Click a country to see the sectors it receives money in. Click empty space to clear. Use the buttons to add sectors or frameworks, or to hide small links.</p>
     ${D.site ? `<p><a href="${esc(D.site)}" target="_blank" rel="noopener" style="color:var(--accent)">Open the EU-CFA Public finance tracker</a></p>` : ""}`;
 }
@@ -884,12 +947,12 @@ own_sources = [
      "provides": f"Winning firm, its nationality, amount, date and project for each contract; {len(contracts)} contracts won by European firms in Franc Zone countries are shown as the contractors layer."},
     {"name": "D3.js graphics library", "provider": "Mike Bostock and contributors", "url": "https://d3js.org", "method": "Downloaded once and embedded",
      "licence": "ISC", "provides": "Draws the network, the matrix and the timeline."}]
-bundle = {"generated": generated, "built": TODAY.isoformat(), "site": TRACKER_SITE_URL,
+bundle = {"generated": generated, "built": TODAY.isoformat(), "site": TRACKER_SITE_URL, "data_status": data_status,
           "own_sources": own_sources, "tracker_sources": T.get("sources", []), "tracker_checks": T.get("link_checks", {}),
           "inst": {k: {"n": v["name"], "t": v["type"], "ms": v["member_state"]} for k, v in INST.items()},
           "countries": {k: {"n": v["name"], "u": v.get("union", "")} for k, v in COUNTRIES.items()},
           "nodes": list(nodes.values()), "links": [{"s": a, "t": b, **v} for (a, b), v in links.items()],
-          "deals": list(deals.values()), "csec": csec, "contracts": contracts, "top": top, "matrix": matrix, "pairs": pair_detail, "cofin": cofin[:150],
+          "deals": list(deals.values()), "csec": csec, "ebrd": {"share": EBRD_EU_SHARE, "src": EBRD_SHARE_SRC}, "contracts": contracts, "top": top, "matrix": matrix, "pairs": pair_detail, "cofin": cofin[:150],
           "years": years, "timeline": timeline, "events": events, "warnings": warnings}
 d3 = REF / "d3.min.js"
 if not d3.exists():

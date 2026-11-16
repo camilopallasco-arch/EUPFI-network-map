@@ -690,6 +690,7 @@ function render3D(nodes, ls, rn, labelled) {
   const biggest = {};
   nodes.forEach(n => { const g = groupOf(n); if (!biggest[g] || (n.v || 0) > (biggest[g].v || 0)) biggest[g] = n; });
   Object.entries(biggest).forEach(([g, n]) => { const [x, y, z] = GROUP_POS[g] || [0, 0, 0]; if (!prev[n.id]) { n.x = n.fx = x; n.y = n.fy = y; n.z = n.fz = z; } });
+  nodes.forEach(n => { if (n.k === "sector" && !prev[n.id]) { n.fx = n.fy = n.fz = undefined; } });   // sectors are not pinned: they settle together with the rest
   const present = new Set(nodes.map(groupOf));
   Object.entries(CLOUDS).forEach(([g, c]) => { c.visible = present.has(g); });
   G3.width(stage.clientWidth).height(stage.clientHeight).graphData({nodes, links: ls});

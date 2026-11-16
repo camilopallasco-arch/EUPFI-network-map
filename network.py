@@ -87,9 +87,10 @@ for d in deals.values():
         l = links[("i:" + d["i"], "a:" + d["g"])]; l["v"] += d["v"]; l["n"] += 1
 for nid, n in list(nodes.items()):
     if n["k"] == "institution" and n.get("ms"):
-        node("m:" + n["ms"], "memberstate", MS_NAMES.get(n["ms"], n["ms"]))
-        nodes["m:" + n["ms"]]["v"] += n["v"]
-        l = links[("m:" + n["ms"], nid)]; l["v"] += n["v"]; l["n"] += 1
+        owner = "EU" if n["ms"] == "WBTF" else n["ms"]   # World Bank trust funds financed by European donors hang off the EU, not a separate ball
+        node("m:" + owner, "memberstate", MS_NAMES.get(owner, owner))
+        nodes["m:" + owner]["v"] += n["v"]
+        l = links[("m:" + owner, nid)]; l["v"] += n["v"]; l["n"] += 1
 # each implementing agency belongs to a member state: a "belongs to" link without amount (the money it implements is EU money)
 for nid, n in list(nodes.items()):
     if n["k"] == "agency" and n.get("ms") and n["ms"] != "EU":
@@ -116,6 +117,89 @@ for d in deals.values():
         for cc in d["c"]:
             csec[cc][d["s"]] += d["v"] / max(1, len(d["c"]))
 csec = {cc: {k: round(v) for k, v in sorted(m.items(), key=lambda x: -x[1]) if v > 0} for cc, m in csec.items()}
+
+# ---------------------------------------------------------------- 3b. contractors: European firms that won AFD-financed contracts
+# Source: AFD open data, "Liste des marchés financés par l'AFD avec la participation financière de l'Union européenne"
+AFD_CONTRACTS = ("https://opendata.afd.fr/api/explore/v2.1/catalog/datasets/"
+                 "liste-des-marches-finances-par-lafd-avec-la-participation-financiere-de-lunion-e/exports/json?limit=-1")
+try:
+    raw = get(AFD_CONTRACTS)
+    json.loads(raw)
+    (DATA / "afd_contracts.json").write_bytes(raw)
+except Exception as e:
+    warnings.append(f"Could not download AFD's contract list ({e}); the last saved copy is used.")
+EU_NAT = {"FRANCE": "FR", "FRANCAISE": "FR", "ALLEMAGNE": "DE", "ALLEMANDE": "DE", "BELGIQUE": "BE", "BELGE": "BE", "ESPAGNE": "ES", "ESPAGNOLE": "ES",
+          "ITALIE": "IT", "ITALIENNE": "IT", "PORTUGAL": "PT", "PORTUGAISE": "PT", "PAYS-BAS": "NL", "PAYS BAS": "NL", "NEERLANDAISE": "NL",
+          "LUXEMBOURG": "LU", "LUXEMBOURGEOISE": "LU", "AUTRICHE": "AT", "AUTRICHIENNE": "AT", "DANEMARK": "DK", "DANOISE": "DK", "SUEDE": "SE",
+          "SUEDOISE": "SE", "FINLANDE": "FI", "FINLANDAISE": "FI", "IRLANDE": "IE", "IRLANDAISE": "IE", "GRECE": "GR", "GRECQUE": "GR",
+          "POLOGNE": "PL", "POLONAISE": "PL", "REPUBLIQUE TCHEQUE": "CZ", "TCHEQUIE": "CZ", "SLOVAQUIE": "SK", "HONGRIE": "HU", "ROUMANIE": "RO",
+          "BULGARIE": "BG", "CROATIE": "HR", "SLOVENIE": "SI", "ESTONIE": "EE", "LETTONIE": "LV", "LITUANIE": "LT", "CHYPRE": "CY", "MALTE": "MT"}
+FZ_NAMES = [("BJ", r"benin"), ("BF", r"burkina"), ("CI", r"cote d.?ivoire"), ("GW", r"guinee[- ]bissau"), ("ML", r"\bmali\b"), ("NE", r"\bniger\b"),
+            ("SN", r"senegal"), ("TG", r"\btogo\b"), ("CM", r"cameroun"), ("CF", r"centrafrique|centrafricaine"), ("TD", r"tchad"),
+            ("GQ", r"guinee equatoriale"), ("GA", r"gabon"), ("CG", r"\bcongo\b")]
+def plain(t):
+    return unicodedata.normalize("NFKD", t or "").encode("ascii", "ignore").decode().upper().strip()
+def fz_code(country):
+    c = plain(country).lower()
+    if re.search(r"democratique|\brdc\b|kinshasa|conakry", c):
+        return None
+    if re.fullmatch(r"\s*guinee\s*", c):
+        return None
+    for cc, rx in FZ_NAMES:
+        if re.search(rx, c):
+            return cc
+    return None
+def contract_date(t):
+    m = re.search(r"(\d{4})-(\d{2})-(\d{2})", t or "") or None
+    if m:
+        return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+    m = re.search(r"(\d{2})/(\d{2})/(\d{4})", t or "")
+    return f"{m.group(3)}-{m.group(2)}-{m.group(1)}" if m else ""
+contracts = []
+cpath = DATA / "afd_contracts.json"
+if cpath.exists():
+    for r in json.load(open(cpath, encoding="utf-8")):
+        cc = fz_code(r.get("pays_beneficiaire"))
+        if not cc:
+            continue
+        nats = [p.strip() for p in re.split(r"[/,;]| ET | - ", plain(r.get("nationalite_de_l_attributaire")))]
+        ms = next((EU_NAT[p] for p in nats if p in EU_NAT), None)
+        if not ms:
+            continue
+        try:
+            k = float(r.get("montant_en_keur") or 0)
+        except ValueError:
+            k = 0
+        # The column is in thousand euros, but some services were entered in euros: a study or technical assistance
+        # worth tens of millions is implausible. Such amounts are read as euros and flagged.
+        what = plain((r.get("nature_et_finalite_du_marche") or "") + " " + (r.get("titre_du_contrat_marche_titre_du_projet") or "")).lower()
+        service = re.search(r"etude|study|assistance|appui|support|preparation|avant-projet|structuration|coordination|tor\b|termes de reference|"
+                            r"capacit|roadmap|formation|conseil|expertise|audit|evaluation|supervision|controle|maitrise d.oeuvre|analyse|capitalisation|diagnostic|"
+                            r"cartographie|recherche|communication|animation|accompagnement", what)
+        flagged = k > 100000 or (k > 10000 and bool(service))
+        eur = k if flagged else k * 1000
+        firm = re.sub(r"\s+", " ", (r.get("nom_de_l_attributaire") or "").strip())
+        contracts.append({"f": firm[:90], "ms": ms, "nat": (r.get("nationalite_de_l_attributaire") or "").strip()[:40], "c": cc,
+                          "p": (r.get("titre_du_contrat_marche_titre_du_projet") or "")[:140], "o": (r.get("nature_et_finalite_du_marche") or "")[:160],
+                          "d": contract_date(r.get("date_signature_du_contrat")), "v": round(eur), "flag": flagged, "proj": r.get("id_projet") or ""})
+    flagged_n = sum(1 for c in contracts if c["flag"])
+    if flagged_n:
+        warnings.append(f"AFD contract list: {flagged_n} amount(s) in the 'thousand euro' column were read as euros (studies or technical assistance entered in euros, or values above 100,000); each is flagged in the contractor's panel.")
+# contractor nodes: one per firm, linked to AFD (financier), to the country of the contract and to the firm's member state
+firm_key = lambda f: "x:" + re.sub(r"[^a-z0-9]+", "-", plain(f).lower()).strip("-")[:60]
+for ct in contracts:
+    fid = firm_key(ct["f"])
+    node(fid, "contractor", ct["f"], ms=ct["ms"])
+    nodes[fid]["v"] += ct["v"]
+    l = links[("i:afd", fid)] if "i:afd" in nodes else None
+    if l is not None:
+        l["v"] += ct["v"]; l["n"] += 1
+    if ("c:" + ct["c"]) in nodes:
+        l = links[(fid, "c:" + ct["c"])]; l["v"] += ct["v"]; l["n"] += 1
+for nid, n in list(nodes.items()):
+    if n["k"] == "contractor" and n.get("ms"):
+        node("m:" + n["ms"], "memberstate", MS_NAMES.get(n["ms"], n["ms"]))
+        links[("m:" + n["ms"], nid)]["n"] += 1
 
 # ---------------------------------------------------------------- 4. overlap: shared countries and sectors, co-financed projects
 cs = collections.defaultdict(lambda: collections.defaultdict(float))  # institution -> (country, sector) -> euros
@@ -251,7 +335,7 @@ TEMPLATE = r'''<!doctype html>
   --bg:#040a0f; --panel:#08151d; --panel2:#0a1c26; --ink:#d9f4ff; --muted:#8db1c0; --dim:#56798a; --line:#163746; --line-hi:#2a6a80;
   --accent:#40e8ff; --waemu:#ffbf5c; --cemac:#ff9a7a;
   --t-dfi:#3aa6ff; --t-bdb:#ff8c42; --t-npb:#2dffc8; --t-eca:#ff3d8e; --t-eu:#ffd84a; --t-wbtf:#e0c8a0;
-  --k-ms:#ffffff; --k-sec:#7be3c0; --k-ag:#d8b4ff; --k-fw:#9fb4c4;
+  --k-ms:#ffffff; --k-sec:#7be3c0; --k-ag:#d8b4ff; --k-fw:#9fb4c4; --k-ct:#ff9e6b;
   --c-mon:#ffd84a; --c-pol:#ff6b6b; --c-eu:#40e8ff; --c-fin:#7be36b; --c-meet:#c592ff;
   --mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace; --sans:"IBM Plex Sans","Segoe UI",system-ui,-apple-system,sans-serif;
   color-scheme:dark;
@@ -405,14 +489,14 @@ document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
 // ---------- NETWORK
 const KIND = {institution:{c:t => css(TYPEVAR[t] || "--t-dfi"), label:"Institution"}, country:{c:(t,u) => css(u === "CEMAC" ? "--cemac" : "--waemu"), label:"Country"},
   memberstate:{c:() => css("--k-ms"), label:"Member state"}, sector:{c:() => css("--k-sec"), label:"Sector"}, agency:{c:() => css("--k-ag"), label:"Implementing agency (EU funds)"},
-  framework:{c:() => css("--k-fw"), label:"Framework (no amounts)"}};
-const layers = {memberstate:true, sector:false, agency:false, framework:false};
+  framework:{c:() => css("--k-fw"), label:"Framework (no amounts)"}, contractor:{c:() => css("--k-ct"), label:"Contractor (European firm, AFD-financed contract)"}};
+const layers = {memberstate:true, sector:false, agency:false, framework:false, contractor:false};
 const typeOn = Object.fromEntries(Object.keys(TYPEVAR).map(t => [t, true]));
 const lay = $("#layers");
 function chip(label, color, on, fn) { const b = document.createElement("button"); b.className = "chip"; b.setAttribute("aria-pressed", on);
   b.innerHTML = `<span class="sw" style="background:${color}"></span>${label}`; b.onclick = () => { fn(); b.setAttribute("aria-pressed", b.getAttribute("aria-pressed") !== "true"); }; lay.append(b); }
 Object.keys(TYPEVAR).forEach(t => chip(TYPELABEL[t], css(TYPEVAR[t]), true, () => { typeOn[t] = !typeOn[t]; buildGraph(); }));
-[["memberstate","Member states"],["agency","Implementing agencies"],["sector","Sectors"],["framework","Frameworks"]].forEach(([k,l]) =>
+[["memberstate","Member states"],["agency","Implementing agencies"],["contractor","Contractors"],["sector","Sectors"],["framework","Frameworks"]].forEach(([k,l]) =>
   chip(l, KIND[k].c(), layers[k], () => { layers[k] = !layers[k]; buildGraph(); }));
 const minWrap = document.createElement("label"); minWrap.className = "ctl";
 minWrap.innerHTML = `Hide links under <select id="minv"><option value="0">€0</option><option value="1000000" selected>€1 m</option><option value="10000000">€10 m</option><option value="50000000">€50 m</option></select>`;
@@ -434,8 +518,8 @@ else { $("#modenote").hidden = false; $("#modenote").textContent = "This compute
 let G3 = null, hovered = null, nbrs = new Set(), hotLinks = new Set();
 // left to right: (1) member states and EU institutions, (2) national public financial institutions, (3) countries, (4) a clicked country's sectors;
 // implementing agencies float above, frameworks below
-const GROUP_POS = {owners: [-520, 0, 0], pfi: [0, 0, 0], country: [520, 0, 0], sector: [900, 0, 0], agency: [-260, 480, 0], framework: [0, -480, 0]};
-const GROUP_COL = {owners: "#e8d27a", pfi: "#3a8cff", country: "#ffb648", sector: "#3fd9b0", agency: "#b77dff", framework: "#7f98aa"};
+const GROUP_POS = {owners: [-520, 0, 0], pfi: [0, 0, 0], country: [520, 0, 0], sector: [900, 0, 0], agency: [-260, 480, 0], framework: [0, -480, 0], contractor: [260, -500, 0]};
+const GROUP_COL = {owners: "#e8d27a", pfi: "#3a8cff", country: "#ffb648", sector: "#3fd9b0", agency: "#b77dff", framework: "#7f98aa", contractor: "#ff8a52"};
 function groupOf(d) {
   if (d.k === "memberstate" || (d.k === "institution" && d.t === "EU institution")) return "owners";
   if (d.k === "institution") return "pfi";
@@ -472,12 +556,14 @@ function render3D(nodes, ls, rn, labelled) {
   const el = $("#net3d"), stage = $("#netstage");
   const prev = G3 ? Object.fromEntries(G3.graphData().nodes.map(n => [n.id, n])) : {};
   nodes.forEach(n => { const p = prev[n.id]; if (p && p.x !== undefined) { n.x = n.fx = p.x; n.y = n.fy = p.y; n.z = n.fz = p.z; } });
+  const hub = nodes.filter(n => groupOf(n) === "pfi").sort((a, b) => b.v - a.v)[0];   // the largest national institution (AFD) sits at the centre
+  if (hub) { const [cx, cy, cz] = GROUP_POS.pfi; hub.x = hub.fx = cx; hub.y = hub.fy = cy; hub.z = hub.fz = cz; }
   ls.forEach(l => { const s = nodeById[l.source], t = nodeById[l.target]; l.col = l.cs ? css("--k-sec") : s && s.k === "institution" ? KIND.institution.c(s.t) : (s && s.k === "memberstate" && t && t.k === "agency") ? css("--k-ag") : "#6f8f9c"; });
   if (!G3) {
     G3 = ForceGraph3D({controlType: "orbit"})(el)
       .backgroundColor("#02060b").showNavInfo(false)
       .nodeThreeObject(d => {
-        const col = nodeColor(d), size = Math.max(7, rn(d) * 1.25), grp = new THREE.Group();
+        const col = nodeColor(d), size = Math.max(2.2, rn(d) * 1.3), grp = new THREE.Group();
         const glow = new THREE.Sprite(new THREE.SpriteMaterial({map: GLOW, color: col, transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: false}));
         glow.scale.set(size * 4, size * 4, 1);
         const core = new THREE.Mesh(new THREE.SphereGeometry(size * 0.42, 18, 14), new THREE.MeshBasicMaterial({color: col, transparent: true, opacity: 0.95}));
@@ -515,6 +601,9 @@ function render3D(nodes, ls, rn, labelled) {
     G3.cameraPosition({x: 60, y: 40, z: 1150}, {x: 60, y: 0, z: 0}, 0);
     setTimeout(() => G3.zoomToFit(reduce ? 0 : 900, 10), 2600);
   }
+  const biggest = {};
+  nodes.forEach(n => { const g = groupOf(n); if (!biggest[g] || (n.v || 0) > (biggest[g].v || 0)) biggest[g] = n; });
+  Object.entries(biggest).forEach(([g, n]) => { const [x, y, z] = GROUP_POS[g] || [0, 0, 0]; if (!prev[n.id]) { n.x = n.fx = x; n.y = n.fy = y; n.z = n.fz = z; } });
   const present = new Set(nodes.map(groupOf));
   Object.entries(CLOUDS).forEach(([g, c]) => { c.visible = present.has(g); });
   G3.width(stage.clientWidth).height(stage.clientHeight).graphData({nodes, links: ls});
@@ -547,7 +636,7 @@ document.addEventListener("fullscreenchange", () => {
   setTimeout(() => { if (USE3D && G3) G3.width($("#netstage").clientWidth).height($("#netstage").clientHeight); else buildGraph(); }, 120);
 });
 const nodeById = Object.fromEntries(D.nodes.map(n => [n.id, n]));
-const COL = {country: 0.86, memberstate: 0.06, institution: 0.34, agency: 0.6, sector: 0.6, framework: 0.97};
+const COL = {country: 0.86, memberstate: 0.06, institution: 0.34, agency: 0.6, sector: 0.6, framework: 0.97, contractor: 0.7};
 function visibleNode(n) {
   if (n.k === "institution") return typeOn[n.t];
   if (n.k === "country") return true;
@@ -558,18 +647,18 @@ function buildGraph() {
   const minv = +$("#minv").value;
   const ns = D.nodes.filter(visibleNode).map(n => Object.assign({}, n));
   const ok = new Set(ns.map(n => n.id));
-  let ls = D.links.filter(l => ok.has(l.s) && ok.has(l.t) && (l.t.startsWith("f:") || l.s.startsWith("f:") || (l.s.startsWith("m:") && l.t.startsWith("a:")) || l.v >= minv))
+  let ls = D.links.filter(l => ok.has(l.s) && ok.has(l.t) && (l.t.startsWith("f:") || l.s.startsWith("f:") || (l.s.startsWith("m:") && (l.t.startsWith("a:") || l.t.startsWith("x:"))) || l.s.startsWith("x:") || l.t.startsWith("x:") || l.v >= minv))
     .filter(l => !(focusCountry && !layers.sector && l.t.startsWith("s:")))   // in country focus, sectors connect to that country only
     .map(l => ({source:l.s, target:l.t, v:l.v, n:l.n}));
   if (focusCountry) Object.entries(D.csec[focusCountry] || {}).forEach(([sec, v]) => { if (ok.has("s:" + sec)) ls.push({source:"c:" + focusCountry, target:"s:" + sec, v, n:0, cs:true}); });
   const used = new Set(ls.flatMap(l => [l.source, l.target]));
   const nodes = ns.filter(n => used.has(n.id) || n.k === "country");
   const W = $("#netstage").clientWidth, H = $("#netstage").clientHeight;
-  const r0 = d3.scaleSqrt().domain([0, d3.max(nodes.filter(n => n.k !== "memberstate"), n => n.v) || 1]).range([3, 26]);
-  const r = v => r0(v); const rn = d => d.k === "memberstate" ? Math.min(14, 3 + r0(d.v || 0) * 0.4) : r0(d.v || 0);
+  const r0 = d3.scaleSqrt().domain([0, d3.max(nodes, n => n.v) || 1]).range([1.6, 30]);   // area proportional to euros
+  const r = v => r0(v); const rn = d => r0(d.v || 0);
   if (USE3D) {
     const instV = nodes.filter(n => n.k === "institution").map(n => n.v).sort((a, b) => b - a), cut = instV[Math.min(14, instV.length - 1)] || 0;
-    render3D(nodes, ls, rn, d => d.k === "country" || d.k === "memberstate" || d.k === "institution" || d.k === "agency" || (d.k === "sector" && focusCountry));
+    render3D(nodes, ls, rn, d => d.k === "country" || d.k === "memberstate" || d.k === "institution" || d.k === "agency" || d.k === "contractor" || (d.k === "sector" && focusCountry));
     return;
   }
   const w = d3.scaleSqrt().domain([0, d3.max(ls, l => l.v) || 1]).range([0.4, 6]);
@@ -653,6 +742,11 @@ function panel(n) {
   } else if (n.k === "agency") {
     const msn = nb.find(([m]) => m.k === "memberstate");
     html += `<p class="hint">${msn ? `A public agency of ${esc(msn[0].l)}. ` : ""}EU money (Commission, EU Trust Fund for Africa, blending, EU-AITF) entrusted to this agency to implement; counted under the EU, not under ${msn ? esc(msn[0].l) : "the member state"}. Its own national budget is not in this network.</p><h3>From</h3>${bars(grp("institution"), css("--t-eu"))}<h3>Largest EU-funded deals it implements</h3>${dealList(D.deals.filter(d => d.g === id))}`;
+  } else if (n.k === "contractor") {
+    const cs = (D.contracts || []).filter(c => "x:" + c.f.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60) === n.id);
+    html += `<p class="hint">A firm from ${esc((D.contracts.find(c => c.f === n.l) || {}).nat || n.ms)} that won contracts financed by AFD (with EU financial participation) in Franc Zone countries.</p><h3>Contracts (${cs.length})</h3>` +
+      cs.sort((a, b) => b.v - a.v).map(c => `<div class="deal">${esc(c.o || c.p)}<div class="meta">${esc((D.countries[c.c] || {}).n || c.c)}${c.d ? ", signed " + esc(c.d) : ""} · project ${esc(c.p)} (${esc(c.proj)}) · <span class="amt">${fmt(c.v)}</span>${c.flag ? " · amount read as euros (entered in the thousand-euro column)" : ""}</div></div>`).join("") +
+      `<p class="hint">Source: AFD open data, contracts financed by AFD with EU financial participation.</p>`;
   } else if (n.k === "framework") {
     html += `<p class="hint">${esc(n.fk)}. Frameworks carry no amounts in this network: the money appears in the deals of the institutions involved.</p><h3>Linked to</h3>` +
       nb.map(([m]) => `<div class="deal">${esc(m.l)} <span class="meta">${esc(KIND[m.k].label)}</span></div>`).join("") + (n.src ? `<p><a href="${esc(n.src)}" target="_blank" rel="noopener">Source</a></p>` : "");
@@ -784,6 +878,10 @@ own_sources = [
      "provides": f"All deals, institutions, countries and programmes, data of {generated}. Each deal links to its original record."},
     {"name": "Event log", "provider": "data/events.csv", "url": "", "method": "Hand-checked; every link tested at build",
      "licence": "Per event", "provides": f"{len(events)} events, each with its own source (listed in the Events tab)."},
+    {"name": "Contracts financed by AFD with EU financial participation", "provider": "AFD open data (opendata.afd.fr)",
+     "url": "https://opendata.afd.fr/explore/dataset/liste-des-marches-finances-par-lafd-avec-la-participation-financiere-de-lunion-e/",
+     "method": "Data feed, read at every build", "licence": "Licence Ouverte / Etalab 2.0",
+     "provides": f"Winning firm, its nationality, amount, date and project for each contract; {len(contracts)} contracts won by European firms in Franc Zone countries are shown as the contractors layer."},
     {"name": "D3.js graphics library", "provider": "Mike Bostock and contributors", "url": "https://d3js.org", "method": "Downloaded once and embedded",
      "licence": "ISC", "provides": "Draws the network, the matrix and the timeline."}]
 bundle = {"generated": generated, "built": TODAY.isoformat(), "site": TRACKER_SITE_URL,
@@ -791,7 +889,7 @@ bundle = {"generated": generated, "built": TODAY.isoformat(), "site": TRACKER_SI
           "inst": {k: {"n": v["name"], "t": v["type"], "ms": v["member_state"]} for k, v in INST.items()},
           "countries": {k: {"n": v["name"], "u": v.get("union", "")} for k, v in COUNTRIES.items()},
           "nodes": list(nodes.values()), "links": [{"s": a, "t": b, **v} for (a, b), v in links.items()],
-          "deals": list(deals.values()), "csec": csec, "top": top, "matrix": matrix, "pairs": pair_detail, "cofin": cofin[:150],
+          "deals": list(deals.values()), "csec": csec, "contracts": contracts, "top": top, "matrix": matrix, "pairs": pair_detail, "cofin": cofin[:150],
           "years": years, "timeline": timeline, "events": events, "warnings": warnings}
 d3 = REF / "d3.min.js"
 if not d3.exists():

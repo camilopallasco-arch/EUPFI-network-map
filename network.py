@@ -697,7 +697,7 @@ function render3D(nodes, ls, rn, labelled) {
       .linkDirectionalParticles(l => (!reduce && hotLinks.has(l)) ? 3 : 0).linkDirectionalParticleWidth(1.8).linkDirectionalParticleSpeed(0.007)
       .onNodeHover(n => { el.style.cursor = n ? "pointer" : "grab"; setHover(n); })
       .onNodeClick(n => clickNode(n))
-      .onBackgroundClick(() => { selected = null; const had = focusCountry; focusCountry = null; setHover(null); if (had) buildGraph(); netIntro(); })
+      .onBackgroundClick(() => { selected = null; dealFocus = null; const had = focusCountry; focusCountry = null; setHover(null); if (had) buildGraph(); netIntro(); })
       .d3Force("shell", shellForce).d3VelocityDecay(0.35).cooldownTicks(reduce ? 0 : 300);
     G3.d3Force("charge").strength(-260).distanceMax(300);
     G3.d3Force("link").distance(120).strength(0.004);
@@ -730,11 +730,22 @@ function render3D(nodes, ls, rn, labelled) {
   G3.width(stage.clientWidth).height(stage.clientHeight).graphData({nodes, links: ls});
   if (selected) { const n = G3.graphData().nodes.find(x => x.id === selected); if (n) setTimeout(() => setHover(n, true), 50); }
 }
+let dealFocus = null;   // a deal opened from the search: light up its institution and only its countries
+function dealSets(d, links) {
+  const inst = "i:" + d.i, keep = new Set([inst, ...d.c.map(c => "c:" + c)]), hot = new Set();
+  links.forEach(l => { const s = l.source.id || l.source, t = l.target.id || l.target; if (s === inst && keep.has(t)) hot.add(l); });
+  return {inst, keep, hot};
+}
 function setHover(n, sticky) {
   if (!G3) return;
+  if (dealFocus && (!n || (sticky && n.id === "i:" + dealFocus.i))) {
+    const g = G3.graphData(), ds = dealSets(dealFocus, g.links);
+    hovered = g.nodes.find(x => x.id === ds.inst) || null; nbrs = ds.keep; hotLinks = ds.hot;
+  } else {
   hovered = n || (selected ? G3.graphData().nodes.find(x => x.id === selected) : null);
   nbrs = new Set(); hotLinks = new Set();
-  if (hovered) { nbrs.add(hovered.id); G3.graphData().links.forEach(l => { const s = l.source.id || l.source, t = l.target.id || l.target; if (s === hovered.id || t === hovered.id) { nbrs.add(s); nbrs.add(t); hotLinks.add(l); } }); }
+  }
+  if (hovered && !(dealFocus && hovered.id === "i:" + dealFocus.i && (!n || sticky))) { nbrs.add(hovered.id); G3.graphData().links.forEach(l => { const s = l.source.id || l.source, t = l.target.id || l.target; if (s === hovered.id || t === hovered.id) { nbrs.add(s); nbrs.add(t); hotLinks.add(l); } }); }
   G3.graphData().nodes.forEach(d => {
     if (!d.__core) return;
     const on = !hovered || nbrs.has(d.id), me = hovered && d.id === hovered.id;
@@ -746,6 +757,7 @@ function setHover(n, sticky) {
   G3.linkWidth(G3.linkWidth()).linkVisibility(G3.linkVisibility()).linkDirectionalParticles(G3.linkDirectionalParticles());
 }
 function clickNode(n) {
+  dealFocus = null;
   selected = n.id;
   if (n.k === "country") { const was = focusCountry; focusCountry = n.id.slice(2); if (was !== focusCountry) buildGraph(); }
   panel(nodeById[n.id] || n); setHover(n, true);   // highlight and details only: the camera stays where it is
@@ -825,7 +837,7 @@ function buildGraph() {
       .on("drag", (e, d) => { d.fx = e.x; d.fy = e.y; }).on("end", (e) => { if (!e.active) sim.alphaTarget(0); }))
     .on("dblclick", (e, d) => { d.fx = null; d.fy = null; sim.alpha(0.3).restart(); })
     .on("mousemove", (e, d) => showTip(e, `<b>${esc(d.l)}</b><br>${esc(KIND[d.k].label)}${d.v ? "<br>" + fmt(d.v) + " in the Franc Zone" : ""}`))
-    .on("mouseleave", hideTip).on("click", (e, d) => {
+    .on("mouseleave", hideTip).on("click", (e, d) => { dealFocus = null;
       selected = d.id;
       if (d.k === "country") { const was = focusCountry; focusCountry = d.id.slice(2); if (was !== focusCountry) { buildGraph(); } }
       highlight(); panel(nodeById[d.id] || d);
@@ -861,11 +873,12 @@ const SHORTS = Object.fromEntries(Object.entries(SHORT_ID).filter(([id]) => D.in
 function shortName(n) { if (SHORTS[n]) return SHORTS[n]; const m = n.match(/\(([^)]+)\)\s*$/); return m && m[1].length < 26 ? m[1] : n.split(" – ")[0].slice(0, 26); }
 function highlight() {
   if (!window._net) return; const {node, link, ls} = window._net;
+  if (dealFocus) { const ds = dealSets(dealFocus, ls); node.classed("faded", d => !ds.keep.has(d.id)); link.classed("faded", l => !ds.hot.has(l)); return; }
   if (!selected) { node.classed("faded", false); link.classed("faded", false); return; }
   const nb = new Set([selected]); ls.forEach(l => { const s = l.source.id || l.source, t = l.target.id || l.target; if (s === selected) nb.add(t); if (t === selected) nb.add(s); });
   node.classed("faded", d => !nb.has(d.id)); link.classed("faded", l => (l.source.id || l.source) !== selected && (l.target.id || l.target) !== selected);
 }
-svg.on("click", e => { if (e.target === svg.node()) { selected = null; const had = focusCountry; focusCountry = null; if (had) buildGraph(); highlight(); netIntro(); } });
+svg.on("click", e => { if (e.target === svg.node()) { selected = null; dealFocus = null; const had = focusCountry; focusCountry = null; if (had) buildGraph(); highlight(); netIntro(); } });
 function bars(items, color) { const max = Math.max(1, ...items.map(x => x[1]));
   return items.map(([l, v]) => `<div class="bar"><span>${esc(l)}</span><span class="track"><i style="width:${(100 * v / max).toFixed(1)}%;background:${color}"></i></span><span class="val">${fmt(v)}</span></div>`).join(""); }
 function dealList(ds, n = 12) { return ds.filter(dealOk).sort((a, b) => b.v - a.v).slice(0, n).map(d => `<div class="deal">${esc(d.t)}<div class="meta">${esc(shortName(instName(d.i)))}, ${d.c.map(c => esc((D.countries[c] || {}).n || c)).join(", ")}${d.y ? ", " + esc(d.y) : ""}, ${esc(d.n)} · <span class="amt">${fmt(d.v)}</span>${d.e ? " (estimated share)" : ""} <a href="${esc(d.u)}" target="_blank" rel="noopener">source</a></div></div>`).join(""); }
@@ -934,6 +947,7 @@ const fold = s => String(s || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, 
 const KLAB = {institution: "Institution", memberstate: "Member state", country: "Country", sector: "Sector", agency: "Implementing agency", contractor: "Contractor", framework: "Framework"};
 const setChip = (key, on) => { const c = document.querySelector(`#layers .chip[data-key="${key}"]`); if (c) c.setAttribute("aria-pressed", String(on)); };
 function revealNode(id, keepPanel) {
+  if (!keepPanel) dealFocus = null;
   const n = D.nodes.find(x => x.id === id); if (!n) return;
   let changed = false;
   if (n.k === "institution" && !typeOn[n.t]) { typeOn[n.t] = true; setChip("t:" + n.t, true); changed = true; }
@@ -949,8 +963,10 @@ function dealPanel(d) {
     <div class="hint">${d.c.map(c => esc((D.countries[c] || {}).n || c)).join(", ")} · ${d.y ? esc(d.y) : "no date"} · ${esc(d.n)}${d.s ? " · " + esc(d.s) : ""}${d.e ? " · estimated share" : ""}</div>
     ${d.eu && Object.keys(d.eu).length ? `<h3>EU or member-state money named</h3>` + [...new Set(Object.values(d.eu))].slice(0, 2).map(q => `<div class="meta">“${esc(q)}”</div>`).join("") : ""}
     <p><a href="${esc(d.u)}" target="_blank" rel="noopener" style="color:var(--accent)">Source record</a></p>
-    <p class="hint">On the network, the institution behind this deal is lit up with its links.</p>`;
+    <p class="hint">On the network, the institution and the country${d.c.length === 1 ? "" : "s"} of this deal are lit up. Click empty space to clear.</p>`;
+  dealFocus = d;
   revealNode("i:" + d.i, true);
+  if (USE3D && G3) setHover(null); else highlight();
 }
 let stimer;
 NS.addEventListener("input", () => { clearTimeout(stimer); stimer = setTimeout(runSearch, 120); });

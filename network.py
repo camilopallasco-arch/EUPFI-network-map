@@ -298,6 +298,23 @@ for a in top:
         else:
             row.append(round(sum(min(v, cs[b].get(k, 0)) for k, v in cs[a].items() if k in cs[b])))
     matrix.append(row)
+# overlap %: share of the country-sector combinations where at least one of the two is active in which both are active
+cells = collections.defaultdict(set)   # institution -> {(country, sector)}, counting deals whose amounts are not published too
+for d in deals.values():
+    for cc in d["c"]:
+        cells[d["i"]].add((cc, d["s"]))
+mjac, mco, pairn = [], [], {}
+co_pairs = collections.Counter()
+for a in top:
+    row = []
+    for b in top:
+        if a == b:
+            row.append(100)
+        else:
+            inter, union = len(cells[a] & cells[b]), len(cells[a] | cells[b])
+            row.append(round(100 * inter / union) if union else 0)
+            pairn[f"{a}|{b}"] = [inter, union]
+    mjac.append(row)
 pair_detail = {}
 for ai, a in enumerate(top):
     for bi, b in enumerate(top):
@@ -367,6 +384,13 @@ for c in sorted(cofin, key=lambda x: -x["v"]):
         continue
     seen_sets.add(sig); uniq.append(c)
 cofin = uniq
+co_count = collections.Counter()
+for c in cofin:
+    ins = sorted({m[0] for m in c["m"]})
+    for x in range(len(ins)):
+        for y in range(x + 1, len(ins)):
+            co_count[(ins[x], ins[y])] += 1
+mco = [[0 if a == b else co_count.get(tuple(sorted((a, b))), 0) for b in top] for a in top]
 
 # ---------------------------------------------------------------- 5. timeline: yearly commitments by type and by country
 years = list(range(1999, TODAY.year + 1))
@@ -444,6 +468,7 @@ aside h2{margin:0 0 4px;font-size:17px}
 aside h3{margin:16px 0 6px;font-size:13px;color:var(--muted);font-weight:600}
 .hint{font-size:13px;color:var(--muted);margin:4px 0 10px}
 .tools{position:absolute;left:14px;top:12px;z-index:2;display:flex;flex-wrap:wrap;gap:6px;max-width:calc(100% - 150px)}
+#netstage .tools{max-width:calc(100% - 390px)}
 .chip{appearance:none;border:1px solid var(--line);background:rgba(4,12,17,.85);color:var(--ink);padding:5px 10px;font:500 12.5px var(--sans);cursor:pointer;display:inline-flex;gap:6px;align-items:center}
 .chip[aria-pressed="false"]{opacity:.4}
 .sw{width:9px;height:9px;border-radius:50%;display:inline-block}
@@ -459,6 +484,14 @@ label.ctl{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:
 .use3d #net{display:none}
 #v-net:fullscreen{background:var(--bg);width:100vw;height:100vh}
 #v-net:fullscreen .stage{height:100vh}
+.nsearch{position:absolute;right:14px;top:52px;z-index:3;width:min(340px,calc(100% - 28px))}
+.nsearch input{width:100%;font:500 13.5px var(--sans);color:var(--ink);background:rgba(4,12,17,.92);border:1px solid var(--line-hi);padding:8px 10px;outline:none}
+.nsearch input:focus{border-color:var(--accent)}
+.nresults{margin-top:2px;background:var(--panel2);border:1px solid var(--line-hi);max-height:340px;overflow:auto}
+.nresults button{display:block;width:100%;text-align:left;appearance:none;border:0;border-bottom:1px solid var(--line);background:transparent;color:var(--ink);padding:7px 10px;font:500 13px var(--sans);cursor:pointer}
+.nresults button:hover,.nresults button:focus{background:rgba(64,232,255,.08);outline:none}
+.nresults .k{display:block;font-size:11.5px;color:var(--muted);font-weight:400}
+.nresults .grp{padding:5px 10px;font:600 11px var(--mono);color:var(--dim);text-transform:uppercase;letter-spacing:.06em}
 .zoom button.fs{width:auto;padding:0 10px;font-size:13px;display:inline-flex;align-items:center;gap:6px}
 .scene-tooltip:empty{display:none}
 .scene-tooltip{font:500 12.5px var(--sans)!important;color:var(--ink)!important;background:rgba(10,28,38,.92)!important;border:1px solid var(--line-hi);padding:6px 9px!important;border-radius:0!important}
@@ -524,6 +557,7 @@ svg text{font-family:var(--sans)}
       <div class="tools" id="layers"></div>
       <div class="zoom"><button id="zin" aria-label="Zoom in">+</button><button id="zout" aria-label="Zoom out">−</button><button id="zreset" aria-label="Reset view">↺</button>
         <button id="fs" class="fs" aria-label="Full screen" title="Full screen (Esc to leave)"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M1 5V1h4M9 1h4v4M13 9v4H9M5 13H1V9" fill="none" stroke="currentColor" stroke-width="1.6"/></svg><span>Full screen</span></button></div>
+      <div class="nsearch"><input id="nsearch" type="search" placeholder="Search an actor or a deal" autocomplete="off" aria-label="Search an actor, an institution or a deal"><div id="nresults" class="nresults" hidden></div></div>
       <svg id="net" role="img" aria-label="Network of European public financial institutions, countries, sectors and agencies"></svg>
       <div id="net3d" aria-label="Three-dimensional network: drag to rotate, scroll to zoom"></div>
       <div class="modenote" id="modenote" hidden></div>
@@ -532,8 +566,8 @@ svg text{font-family:var(--sans)}
     <aside id="netpanel"></aside>
   </section>
   <section class="view" id="v-ovl" hidden>
-    <div class="stage"><div class="tools"><label class="ctl">Institutions shown <select id="ovn"><option>12</option><option selected>18</option><option>24</option></select></label>
-      <label class="ctl">Country <select id="ovc"></select></label></div><div class="matrix" id="matrix"></div></div>
+    <div class="stage"><div class="tools"><label class="ctl">Measure <select id="ovm"><option value="jac" selected>Overlap %</option><option value="co">Co-financed projects</option></select></label><label class="ctl">Institutions shown <select id="ovn"><option>12</option><option selected>18</option><option>24</option></select></label>
+      </div><div class="matrix" id="matrix"></div></div>
     <aside id="ovlpanel"></aside>
   </section>
   <section class="view" id="v-evt" hidden>
@@ -579,14 +613,14 @@ const KIND = {institution:{c:t => css(TYPEVAR[t] || "--t-dfi"), label:"Instituti
 const layers = {memberstate:true, sector:false, agency:false, framework:false, contractor:false};
 const typeOn = Object.fromEntries(Object.keys(TYPEVAR).map(t => [t, true]));
 const lay = $("#layers");
-function chip(label, color, on, fn) { const b = document.createElement("button"); b.className = "chip"; b.setAttribute("aria-pressed", on);
+function chip(label, color, on, fn, key) { const b = document.createElement("button"); b.className = "chip"; if (key) b.dataset.key = key; b.setAttribute("aria-pressed", on);
   b.innerHTML = `<span class="sw" style="background:${color}"></span>${label}`; b.onclick = () => { fn(); b.setAttribute("aria-pressed", b.getAttribute("aria-pressed") !== "true"); }; lay.append(b); }
-Object.keys(TYPEVAR).forEach(t => chip(TYPELABEL[t], css(TYPEVAR[t]), true, () => { typeOn[t] = !typeOn[t]; buildGraph(); }));
+Object.keys(TYPEVAR).forEach(t => chip(TYPELABEL[t], css(TYPEVAR[t]), true, () => { typeOn[t] = !typeOn[t]; buildGraph(); }, "t:" + t));
 [["memberstate","Member states"],["agency","Implementing agencies"],["contractor","Contractors"],["sector","Sectors"],["framework","Frameworks"]].forEach(([k,l]) =>
-  chip(l, KIND[k].c(), layers[k], () => { layers[k] = !layers[k]; buildGraph(); }));
+  chip(l, KIND[k].c(), layers[k], () => { layers[k] = !layers[k]; buildGraph(); }, "l:" + k));
 const minWrap = document.createElement("label"); minWrap.className = "ctl";
-minWrap.innerHTML = `Hide links under <select id="minv"><option value="0">€0</option><option value="1000000" selected>€1 m</option><option value="10000000">€10 m</option><option value="50000000">€50 m</option></select>`;
-lay.append(minWrap); $("#minv").onchange = buildGraph;
+minWrap.innerHTML = `Since <select id="since"><option value="0" selected>All years (1999 onward)</option>${Array.from({length: new Date().getFullYear() - 1998}, (_, i) => 1999 + i).map(y => `<option value="${y}">${y}</option>`).join("")}</select>`;
+lay.append(minWrap); $("#since").onchange = e => { SINCE = +e.target.value; buildGraph(); if (!selected) netIntro(); };
 $("#netlegend").innerHTML = Object.entries(KIND).map(([k,v]) => `<span><i class="sw" style="background:${k === "country" ? css("--waemu") : v.c()}"></i>${v.label}</span>`).join("") +
   (USE3D ? `<span>Drag to rotate, scroll to zoom, hover to light up an actor, click for details. Grey lines: amount not published.</span>` : `<span>Size and line width follow euros. Drag a dot to pin it, double-click to release.</span>`);
 
@@ -730,14 +764,47 @@ function visibleNode(n) {
   if (n.k === "sector" && focusCountry) return true;  // a clicked country shows its sectors
   return layers[n.k];
 }
+// ---------- "Since": the network recalculated from the deals and contracts of the chosen period
+let SINCE = 0;
+const ALL_LINKS = D.links.slice(), ORIG_V = Object.fromEntries(D.nodes.map(n => [n.id, n.v]));
+const xkey = g => "x:" + g.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60);
+const dealOk = d => !SINCE || (d.y && +d.y >= SINCE);
+function derive() {
+  if (!SINCE) return {links: ALL_LINKS, v: ORIG_V, inst: null};
+  const L = new Map(), V = {}, inst = new Set();
+  const add = (s, t, v) => { const k = s + "|" + t, o = L.get(k) || {s, t, v: 0, n: 0}; o.v += v; o.n++; L.set(k, o); };
+  const addV = (id, v) => { V[id] = (V[id] || 0) + v; };
+  for (const d of D.deals) {
+    if (!dealOk(d)) continue;
+    const iid = "i:" + d.i, sh = d.v / Math.max(1, d.c.length); inst.add(d.i); addV(iid, d.v);
+    d.c.forEach(c => { add(iid, "c:" + c, sh); addV("c:" + c, sh); });
+    if (d.s) { add(iid, "s:" + d.s, d.v); addV("s:" + d.s, d.v); }
+    if (d.g && (D.inst[d.i] || {}).t === "EU institution") { add(iid, "a:" + d.g, d.v); addV("a:" + d.g, d.v); }
+  }
+  inst.forEach(i => { const ms = (D.inst[i] || {}).ms, owner = (ms === "WBTF" || ms === "INT") ? "EU" : ms, f = ms === "INT" ? D.ebrd.share : 1, v = (V["i:" + i] || 0) * f;
+    add("m:" + owner, "i:" + i, v); addV("m:" + owner, v); });
+  for (const c of (D.contracts || [])) {
+    const yr = +String(c.d || "").slice(0, 4); if (!yr || yr < SINCE) continue;
+    for (const [g, m] of (c.g || [])) { const x = xkey(g), val = c.v / (c.parts || 1); addV(x, val); add("i:afd", x, val); add(x, "c:" + c.c, val); if (!L.has("m:" + m + "|" + x)) L.set("m:" + m + "|" + x, {s: "m:" + m, t: x, v: 0, n: 1}); }
+  }
+  // links without amounts stay: frameworks, agencies' member states, EBRD co-financing (if the EBRD has deals in the period)
+  ALL_LINKS.filter(l => l.s.startsWith("f:") || l.t.startsWith("f:") || (l.s.startsWith("m:") && l.t.startsWith("a:")) || (l.co && inst.has("ebrd")))
+    .forEach(l => { if (!L.has(l.s + "|" + l.t)) L.set(l.s + "|" + l.t, Object.assign({}, l)); });
+  return {links: [...L.values()], v: V, inst};
+}
+function csecNow(cc) {
+  if (!SINCE) return D.csec[cc] || {};
+  const m = {}; D.deals.filter(d => dealOk(d) && d.s && d.c.includes(cc)).forEach(d => { m[d.s] = (m[d.s] || 0) + d.v / Math.max(1, d.c.length); }); return m;
+}
 function buildGraph() {
-  const minv = +$("#minv").value;
-  const ns = D.nodes.filter(visibleNode).map(n => Object.assign({}, n));
+  const der = derive();
+  D.links = der.links; D.nodes.forEach(n => { n.v = der.v[n.id] || 0; });   // panels read the current period
+  const ns = D.nodes.filter(visibleNode).filter(n => !(der.inst && n.k === "institution" && !der.inst.has(n.id.slice(2)))).map(n => Object.assign({}, n));
   const ok = new Set(ns.map(n => n.id));
-  let ls = D.links.filter(l => ok.has(l.s) && ok.has(l.t) && (l.t.startsWith("f:") || l.s.startsWith("f:") || (l.s.startsWith("m:") && (l.t.startsWith("a:") || l.t.startsWith("x:"))) || l.s.startsWith("x:") || l.t.startsWith("x:") || l.co || !l.v || l.v >= minv))
+  let ls = D.links.filter(l => ok.has(l.s) && ok.has(l.t))
     .filter(l => !(focusCountry && !layers.sector && l.t.startsWith("s:")))   // in country focus, sectors connect to that country only
     .map(l => ({source:l.s, target:l.t, v:l.v, n:l.n, co:l.co, own:l.own}));
-  if (focusCountry) Object.entries(D.csec[focusCountry] || {}).forEach(([sec, v]) => { if (ok.has("s:" + sec)) ls.push({source:"c:" + focusCountry, target:"s:" + sec, v, n:0, cs:true}); });
+  if (focusCountry) Object.entries(csecNow(focusCountry)).forEach(([sec, v]) => { if (ok.has("s:" + sec)) ls.push({source:"c:" + focusCountry, target:"s:" + sec, v, n:0, cs:true}); });
   const used = new Set(ls.flatMap(l => [l.source, l.target]));
   const nodes = ns.filter(n => used.has(n.id) || n.k === "country" || n.k === "memberstate" || n.k === "institution");
   const W = $("#netstage").clientWidth, H = $("#netstage").clientHeight;
@@ -763,8 +830,8 @@ function buildGraph() {
       if (d.k === "country") { const was = focusCountry; focusCountry = d.id.slice(2); if (was !== focusCountry) { buildGraph(); } }
       highlight(); panel(nodeById[d.id] || d);
     });
-  const csz = focusCountry ? d3.scaleSqrt().domain([0, d3.max(Object.values(D.csec[focusCountry] || {})) || 1]).range([4, 16]) : null;
-  if (csz) nodes.forEach(d => { if (d.k === "sector" && !layers.sector) d.fv = (D.csec[focusCountry] || {})[d.id.slice(2)] || 0; });
+  const csz = focusCountry ? d3.scaleSqrt().domain([0, d3.max(Object.values(csecNow(focusCountry))) || 1]).range([4, 16]) : null;
+  if (csz) nodes.forEach(d => { if (d.k === "sector" && !layers.sector) d.fv = csecNow(focusCountry)[d.id.slice(2)] || 0; });
   node.append("circle").attr("r", d => d.k === "framework" ? 5 : (csz && d.k === "sector" && !layers.sector) ? csz(d.fv) : rn(d))
     .attr("fill", d => d.k === "framework" ? "none" : KIND[d.k].c(d.t, d.u)).attr("stroke", d => d.k === "framework" ? css("--k-fw") : "#000")
     .attr("stroke-width", d => d.k === "framework" ? 1.5 : 0.8);
@@ -801,7 +868,7 @@ function highlight() {
 svg.on("click", e => { if (e.target === svg.node()) { selected = null; const had = focusCountry; focusCountry = null; if (had) buildGraph(); highlight(); netIntro(); } });
 function bars(items, color) { const max = Math.max(1, ...items.map(x => x[1]));
   return items.map(([l, v]) => `<div class="bar"><span>${esc(l)}</span><span class="track"><i style="width:${(100 * v / max).toFixed(1)}%;background:${color}"></i></span><span class="val">${fmt(v)}</span></div>`).join(""); }
-function dealList(ds, n = 12) { return ds.sort((a, b) => b.v - a.v).slice(0, n).map(d => `<div class="deal">${esc(d.t)}<div class="meta">${esc(shortName(instName(d.i)))}, ${d.c.map(c => esc((D.countries[c] || {}).n || c)).join(", ")}${d.y ? ", " + esc(d.y) : ""}, ${esc(d.n)} · <span class="amt">${fmt(d.v)}</span>${d.e ? " (estimated share)" : ""} <a href="${esc(d.u)}" target="_blank" rel="noopener">source</a></div></div>`).join(""); }
+function dealList(ds, n = 12) { return ds.filter(dealOk).sort((a, b) => b.v - a.v).slice(0, n).map(d => `<div class="deal">${esc(d.t)}<div class="meta">${esc(shortName(instName(d.i)))}, ${d.c.map(c => esc((D.countries[c] || {}).n || c)).join(", ")}${d.y ? ", " + esc(d.y) : ""}, ${esc(d.n)} · <span class="amt">${fmt(d.v)}</span>${d.e ? " (estimated share)" : ""} <a href="${esc(d.u)}" target="_blank" rel="noopener">source</a></div></div>`).join(""); }
 function panel(n) {
   const id = n.id.slice(2), p = $("#netpanel");
   const nb = D.links.filter(l => l.s === n.id || l.t === n.id).map(l => [nodeById[l.s === n.id ? l.t : l.s], l]).filter(x => x[0]);
@@ -822,7 +889,7 @@ function panel(n) {
     if (co.length) html += `<h3>Co-financed projects</h3>` + co.map(c => `<div class="deal">${c.m.map(m => esc(shortName(instName(m[0])))).filter((v,i,a) => a.indexOf(v) === i).join(" + ")} <span class="meta">(shared words: ${esc(c.w.join(", "))})</span></div>`).join("");
     html += `<h3>Largest deals (${ds.length})</h3>${dealList(ds)}`;
   } else if (n.k === "country") {
-    const secs = Object.entries(D.csec[id] || {});
+    const secs = Object.entries(csecNow(id)).sort((a, b) => b[1] - a[1]);
     html += `<h3>Sectors it receives money in</h3>` + (secs.length ? bars(secs.slice(0, 11).map(([s, v]) => [s, v]), css("--k-sec")) : `<p class="hint">No sector recorded.</p>`) +
       `<p class="hint">Shown as green links on the graph. Click empty space to hide them.</p>` +
       `<h3>Institutions</h3>${bars(grp("institution"), css("--t-dfi"))}<h3>Largest deals</h3>${dealList(D.deals.filter(d => d.c.includes(id)))}`;
@@ -850,44 +917,92 @@ function panel(n) {
   p.innerHTML = html;
 }
 function netIntro() {
-  const tot = D.deals.reduce((s, d) => s + d.v, 0);
+  const inPeriod = D.deals.filter(dealOk), tot = inPeriod.reduce((s, d) => s + d.v, 0);
   $("#netpanel").innerHTML = `<h2>The network</h2><p class="hint">European public financial institutions (development banks, DFIs, promotional banks, export credit agencies, EU institutions) and World Bank trust funds financed by European donors, linked to the 14 CFA franc countries they finance since 1999, to their member states, and to the agencies that implement EU funds.</p>
-    <div class="big">${fmt(tot)}</div><div class="hint">${D.deals.length.toLocaleString("en")} deals from ${Object.keys(D.inst).length} institutions in scope</div>
+    <div class="big">${fmt(tot)}</div><div class="hint">${inPeriod.length.toLocaleString("en")} deals from ${new Set(inPeriod.map(d => d.i)).size} institutions in scope${SINCE ? ", signed or started since " + SINCE + " (undated deals left out)" : ""}</div>
     <div class="hint">Same total and rules as the tracker's header (investment and development finance since 1999; EU humanitarian aid and foreign-policy grants excluded). ${D.data_status === "live"
       ? `Tracker data of ${esc(D.generated)}, read at this build.`
       : `<span style="color:#ffc9a8">Using a saved copy of the tracker data of ${esc(D.generated)}: this site is not connected to the tracker, so its total may differ. Set TRACKER_SITE_URL in network.py.</span>`}</div>
-    <h3>How to read it</h3><p class="hint">Click any dot for its details and sources. Click a country to see the sectors it receives money in. Click empty space to clear. Use the buttons to add sectors or frameworks, or to hide small links.</p>
+    <h3>How to read it</h3><p class="hint">Click any dot for its details and sources. Click a country to see the sectors it receives money in. Click empty space to clear. Use the buttons to add sectors or frameworks, "Since" to look at a period, and the search box to find an actor or a deal.</p>
     ${D.site ? `<p><a href="${esc(D.site)}" target="_blank" rel="noopener" style="color:var(--accent)">Open the EU-CFA Public finance tracker</a></p>` : ""}`;
 }
 netIntro();
 
+// ---------- SEARCH
+const NS = $("#nsearch"), NR = $("#nresults");
+const fold = s => String(s || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+const KLAB = {institution: "Institution", memberstate: "Member state", country: "Country", sector: "Sector", agency: "Implementing agency", contractor: "Contractor", framework: "Framework"};
+const setChip = (key, on) => { const c = document.querySelector(`#layers .chip[data-key="${key}"]`); if (c) c.setAttribute("aria-pressed", String(on)); };
+function revealNode(id, keepPanel) {
+  const n = D.nodes.find(x => x.id === id); if (!n) return;
+  let changed = false;
+  if (n.k === "institution" && !typeOn[n.t]) { typeOn[n.t] = true; setChip("t:" + n.t, true); changed = true; }
+  if (["agency", "contractor", "sector", "framework"].includes(n.k) && !layers[n.k]) { layers[n.k] = true; setChip("l:" + n.k, true); changed = true; }
+  if (SINCE && !n.v && n.k !== "memberstate") { SINCE = 0; $("#since").value = "0"; changed = true; }   // not active in the chosen period: show all years
+  if (changed) buildGraph();
+  selected = id;
+  if (!keepPanel) panel(nodeById[id] || n);
+  if (USE3D && G3) { const g = G3.graphData().nodes.find(x => x.id === id); if (g) setHover(g, true); } else highlight();
+}
+function dealPanel(d) {
+  $("#netpanel").innerHTML = `<h2>${esc(d.t)}</h2><div class="meta">Deal · ${esc(instName(d.i))}</div><div class="big">${fmt(d.v)}</div>
+    <div class="hint">${d.c.map(c => esc((D.countries[c] || {}).n || c)).join(", ")} · ${d.y ? esc(d.y) : "no date"} · ${esc(d.n)}${d.s ? " · " + esc(d.s) : ""}${d.e ? " · estimated share" : ""}</div>
+    ${d.eu && Object.keys(d.eu).length ? `<h3>EU or member-state money named</h3>` + [...new Set(Object.values(d.eu))].slice(0, 2).map(q => `<div class="meta">“${esc(q)}”</div>`).join("") : ""}
+    <p><a href="${esc(d.u)}" target="_blank" rel="noopener" style="color:var(--accent)">Source record</a></p>
+    <p class="hint">On the network, the institution behind this deal is lit up with its links.</p>`;
+  revealNode("i:" + d.i, true);
+}
+let stimer;
+NS.addEventListener("input", () => { clearTimeout(stimer); stimer = setTimeout(runSearch, 120); });
+NS.addEventListener("keydown", e => { if (e.key === "Escape") { NR.hidden = true; NS.blur(); } if (e.key === "Enter") { const b = NR.querySelector("button"); if (b) b.click(); } });
+document.addEventListener("click", e => { if (!e.target.closest(".nsearch")) NR.hidden = true; });
+function runSearch() {
+  const q = fold(NS.value.trim()); if (q.length < 2) { NR.hidden = true; return; }
+  const rank = (a, b, la, lb, va, vb) => (fold(la).startsWith(q) ? 0 : 1) - (fold(lb).startsWith(q) ? 0 : 1) || vb - va;
+  const actors = D.nodes.filter(n => fold(n.l).includes(q)).sort((a, b) => rank(a, b, a.l, b.l, ORIG_V[a.id] || 0, ORIG_V[b.id] || 0)).slice(0, 8);
+  const deals = D.deals.filter(d => fold(d.t).includes(q)).sort((a, b) => b.v - a.v).slice(0, 8);
+  NR.innerHTML = (!actors.length && !deals.length) ? `<div class="grp">No match</div>` :
+    (actors.length ? `<div class="grp">Actors</div>` + actors.map(n => `<button data-a="${esc(n.id)}">${esc(n.l)}<span class="k">${esc(KLAB[n.k] || n.k)}${n.t ? " · " + esc(TYPELABEL[n.t] || n.t) : ""}</span></button>`).join("") : "") +
+    (deals.length ? `<div class="grp">Deals</div>` + deals.map(d => `<button data-d="${esc(d.id)}">${esc(d.t.slice(0, 90))}<span class="k">${esc(shortName(instName(d.i)))} · ${d.c.map(c => esc((D.countries[c] || {}).n || c)).join(", ")}${d.y ? " · " + esc(d.y) : ""} · ${fmt(d.v)}</span></button>`).join("") : "");
+  NR.hidden = false;
+  NR.querySelectorAll("button[data-a]").forEach(b => b.onclick = () => { NR.hidden = true; revealNode(b.dataset.a); });
+  NR.querySelectorAll("button[data-d]").forEach(b => b.onclick = () => { NR.hidden = true; const d = D.deals.find(x => x.id === b.dataset.d); if (d) dealPanel(d); });
+}
+
 // ---------- OVERLAP
-$("#ovc").innerHTML = `<option value="">All countries</option>`; // matrix uses all countries; the panel lists country detail
 function drawMatrix() {
-  const n = +$("#ovn").value, ids = D.top.slice(0, n), M = D.matrix;
+  const n = +$("#ovn").value, ids = D.top.slice(0, n), jac = $("#ovm").value === "jac", M = jac ? D.mjac : D.mco;
   const max = Math.max(1, ...ids.flatMap((a, i) => ids.map((b, j) => i === j ? 0 : M[i][j])));
-  const col = v => `rgba(64,232,255,${(0.08 + 0.92 * Math.sqrt(v / max)).toFixed(3)})`;
-  let h = `<table><tr><th></th>${ids.map(b => `<th class="col"><div>${esc(shortName(instName(b)))}</div></th>`).join("")}</tr>`;
+  const col = v => `rgba(64,232,255,${(0.1 + 0.9 * (v / max)).toFixed(3)})`;
+  let h = `<p class="hint" style="max-width:760px;margin:0 0 10px">${jac
+    ? "Overlap %: of all the country–sector combinations where at least one of the two institutions is active, the share where both are. 0% = never in the same place on the same topic; 100% = always."
+    : "Co-financed projects: the number of projects both institutions finance, found by matching their deal titles in the same country (evidence in the panel)."}</p>`;
+  h += `<table><tr><th></th>${ids.map(b => `<th class="col"><div>${esc(shortName(instName(b)))}</div></th>`).join("")}</tr>`;
   ids.forEach((a, i) => { h += `<tr><th style="text-align:right">${esc(shortName(instName(a)))}</th>` + ids.map((b, j) => {
       const v = M[i][j];
-      if (i === j) return `<td class="diag" style="background:${css(TYPEVAR[(D.inst[a] || {}).t] || "--t-dfi")};color:#000" title="${esc(instName(a))}: ${fmt(v)} in total">●</td>`;
-      return `<td data-a="${a}" data-b="${b}" style="background:${v ? col(v) : "transparent"}" title="${esc(shortName(instName(a)))} and ${esc(shortName(instName(b)))}: ${fmt(v)} of overlapping finance">${v >= 1e8 ? Math.round(v / 1e8) / 10 : ""}</td>`; }).join("") + "</tr>"; });
+      if (i === j) return `<td class="diag" style="background:${css(TYPEVAR[(D.inst[a] || {}).t] || "--t-dfi")};color:#000" title="${esc(instName(a))}">●</td>`;
+      const pn = D.pairn[a + "|" + b] || [0, 0];
+      const tip = jac ? `${shortName(instName(a))} and ${shortName(instName(b))}: ${v}% overlap (both active in ${pn[0]} of the ${pn[1]} country–sector combinations where either is active)`
+                      : `${shortName(instName(a))} and ${shortName(instName(b))}: ${v} co-financed project${v === 1 ? "" : "s"}`;
+      return `<td data-a="${a}" data-b="${b}" style="background:${v ? col(v) : "transparent"}" title="${esc(tip)}">${v ? v : ""}</td>`; }).join("") + "</tr>"; });
   $("#matrix").innerHTML = h + "</table>";
   $("#matrix").querySelectorAll("td[data-a]").forEach(td => td.onclick = () => pairPanel(td.dataset.a, td.dataset.b));
 }
+$("#ovm").onchange = drawMatrix;
 $("#ovn").onchange = drawMatrix;
 function pairPanel(a, b) {
   const key = D.pairs[a + "|" + b] ? a + "|" + b : b + "|" + a, rows = D.pairs[key] || [], flip = key !== a + "|" + b;
   const co = D.cofin.filter(c => c.m.some(m => m[0] === a) && c.m.some(m => m[0] === b));
   $("#ovlpanel").innerHTML = `<h2>${esc(shortName(instName(a)))} and ${esc(shortName(instName(b)))}</h2>
-    <p class="hint">Where both finance the same sector in the same country. The overlap is the smaller of the two amounts, summed over every shared country and sector.</p>
+    <div class="big">${(D.pairn[a + "|" + b] || [0, 0])[1] ? Math.round(100 * D.pairn[a + "|" + b][0] / D.pairn[a + "|" + b][1]) : 0}% overlap</div>
+    <p class="hint">Both are active in ${(D.pairn[a + "|" + b] || [0])[0]} of the ${(D.pairn[a + "|" + b] || [0, 0])[1]} country–sector combinations where at least one of them works. They co-finance ${co.length} project${co.length === 1 ? "" : "s"} (listed below).</p>
     <h3>Shared countries and sectors</h3>` + (rows.length ? rows.map(r => `<div class="deal">${esc((D.countries[r[0]] || {}).n || r[0])}, ${esc(r[1])}<div class="meta">${esc(shortName(instName(flip ? b : a)))} <span class="amt">${fmt(r[2])}</span>, ${esc(shortName(instName(flip ? a : b)))} <span class="amt">${fmt(r[3])}</span></div></div>`).join("") : `<p class="hint">None.</p>`) +
     `<h3>Co-financed projects</h3>` + (co.length ? co.map(cofinHtml).join("") : `<p class="hint">No project found in both records.</p>`);
 }
 function cofinHtml(c) { return `<div class="deal"><b>${c.m.map(m => esc(shortName(instName(m[0])))).filter((v,i,a) => a.indexOf(v) === i).join(" + ")}</b>, ${c.c.map(x => esc((D.countries[x] || {}).n || x)).join(", ")}
   <div class="meta">Evidence: both records name ${esc(c.w.join(", "))}</div>` + c.m.map(m => `<div class="meta">· ${esc(shortName(instName(m[0])))}: ${esc(m[1])}${m[2] ? " (" + esc(m[2]) + ")" : ""} <span class="amt">${fmt(m[3])}</span> <a href="${esc(m[4])}" target="_blank" rel="noopener">source</a></div>`).join("") + `</div>`; }
 function ovlIntro() {
-  $("#ovlpanel").innerHTML = `<h2>Overlap</h2><p class="hint">Each cell shows how much two institutions overlap: the euros they both put into the same sector in the same country (the smaller of the two amounts, summed). The diagonal marks each institution. Click a cell for the shared countries and sectors and the projects both finance.</p>
+  $("#ovlpanel").innerHTML = `<h2>Overlap</h2><p class="hint">Two measures, chosen with "Measure": the overlap %, the share of the country–sector combinations where at least one of two institutions is active in which both are; and the number of projects both co-finance. The diagonal marks each institution. Click a cell for the shared countries and sectors and the projects both finance.</p>
     <h3>Co-financed projects (${D.cofin.length})</h3><p class="hint">Deals from different institutions in the same country, within three years, whose titles share distinctive words (for example a dam or company name). The evidence is shown with each match; check the sources before citing.</p>` + D.cofin.slice(0, 25).map(cofinHtml).join("");
 }
 ovlIntro();
@@ -982,7 +1097,7 @@ $("#about").innerHTML = `<h2>About this tracker</h2>
   <h2>Scope</h2><ul><li>Included: European development banks and DFIs, national promotional banks, export credit agencies, EU institutions (the EIB, the European Commission, the EU Trust Fund for Africa, EU blending grants, the EU-Africa Infrastructure Trust Fund, ElectriFI and AgriFI), and World Bank-managed trust funds financed only by European donors.</li>
   <li>Not included: the EBRD, EU humanitarian aid and foreign-policy instruments, and non-European financiers.</li></ul>
   <h2>Method</h2><ul><li>Network: links are weighted by euros attributed to Franc Zone countries since 1999. EU money implemented by a member-state agency (AFD, GIZ, Expertise France, Enabel and others) is linked from the EU institution to that agency and counted under the EU.</li>
-  <li>Overlap: for two institutions, the euros both put into the same sector in the same country (the smaller of the two amounts, summed over every shared country and sector).</li>
+  <li>Overlap %: for two institutions, the share of the country–sector combinations where at least one of them is active in which both are (0% to 100%; deals with unpublished amounts count as activity). Co-financed projects: the number of projects both finance, found by matching their deal titles (see below).</li>
   <li>Co-financed projects: deals by different institutions in the same country, within three years of each other, whose titles share distinctive words. The shared words are shown as evidence. This is a rule-based match: check the sources before citing a project as co-financed.</li>
   <li>Events: hand-checked, each with its source; the build tests every source link and lists any that fail under Events.</li></ul>
   <h2>Data</h2><p>Tracker data dated ${esc(D.generated)}; this page built on ${esc(D.built)}. Every deal links to its source record.</p>` + actorDirectory();
@@ -1018,7 +1133,7 @@ bundle = {"generated": generated, "built": TODAY.isoformat(), "site": TRACKER_SI
           "inst": {k: {"n": v["name"], "t": v["type"], "ms": v["member_state"]} for k, v in INST.items()},
           "countries": {k: {"n": v["name"], "u": v.get("union", "")} for k, v in COUNTRIES.items()},
           "nodes": list(nodes.values()), "links": [{"s": a, "t": b, **v} for (a, b), v in links.items()],
-          "deals": list(deals.values()), "csec": csec, "ebrd": {"share": EBRD_EU_SHARE, "src": EBRD_SHARE_SRC}, "contracts": contracts, "top": top, "matrix": matrix, "pairs": pair_detail, "cofin": cofin[:150],
+          "deals": list(deals.values()), "csec": csec, "ebrd": {"share": EBRD_EU_SHARE, "src": EBRD_SHARE_SRC}, "contracts": contracts, "mjac": mjac, "mco": mco, "pairn": pairn, "top": top, "matrix": matrix, "pairs": pair_detail, "cofin": cofin[:150],
           "years": years, "timeline": timeline, "events": events, "warnings": warnings}
 d3 = REF / "d3.min.js"
 if not d3.exists():

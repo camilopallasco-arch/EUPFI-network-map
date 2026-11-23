@@ -1,39 +1,52 @@
-   name: Build network tracker
+name: Build network tracker
 
-   on:
-     schedule:
-       - cron: "0 7 1 * *"
-     workflow_dispatch:
-     push:
-       branches: [main]
+on:
+  schedule:
+    - cron: "0 7 * * *"      # every day at 07:00 UTC: rebuilds only if the tracker's data has changed
+  workflow_dispatch:
+  push:
+    branches: [main]
 
-   permissions:
-     contents: write
-     pages: write
-     id-token: write
+permissions:
+  contents: write
+  pages: write
+  id-token: write
 
-   jobs:
-     build:
-       runs-on: ubuntu-latest
-       environment:
-         name: github-pages
-         url: ${{ steps.deploy.outputs.page_url }}
-       steps:
-         - uses: actions/checkout@v4
-         - uses: actions/setup-python@v5
-           with:
-             python-version: "3.12"
-         - name: Build the network, overlap and events pages
-           run: python network.py
-         - name: Save the updated data
-           run: |
-             git config user.name "tracker-bot"
-             git config user.email "tracker-bot@users.noreply.github.com"
-             git add data site ref
-             git diff --cached --quiet || git commit -m "Network tracker update $(date +%Y-%m-%d)"
-             git push
-         - uses: actions/upload-pages-artifact@v3
-           with:
-             path: site
-         - id: deploy
-           uses: actions/deploy-pages@v4
+# one run at a time: a new run waits for the previous one instead of colliding with it
+concurrency:
+  group: network-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build the network, overlap and events pages (if the tracker changed)
+        run: python network.py
+      - name: Save the updated data
+        continue-on-error: true      # if saving fails, the site is still published; the data is saved at the next run
+        run: |
+          git config user.name "tracker-bot"
+          git config user.email "tracker-bot@users.noreply.github.com"
+          for d in data site ref; do if [ -e "$d" ]; then git add "$d"; fi; done
+          if git diff --cached --quiet; then echo "Nothing new to save."; exit 0; fi
+          git commit -m "Network tracker update $(date +%Y-%m-%d)"
+          # if you committed while this run was going, fetch your changes first, then save (up to 3 tries)
+          for attempt in 1 2 3; do
+            git pull --rebase -X theirs origin main && git push && exit 0
+            echo "Save attempt $attempt failed; retrying in 10 seconds."; sleep 10
+          done
+          echo "Could not save the data this time; the site is published anyway."
+          exit 1
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@v4

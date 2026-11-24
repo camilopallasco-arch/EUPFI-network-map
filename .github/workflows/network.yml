@@ -1,8 +1,8 @@
-name: Build network tracker
+name: Monthly update
 
 on:
   schedule:
-    - cron: "0 7 * * *"      # every day at 07:00 UTC: rebuilds only if the tracker's data has changed
+    - cron: "0 5 1 * *"      # 05:00 UTC on the 1st of each month
   workflow_dispatch:
   push:
     branches: [main]
@@ -14,11 +14,11 @@ permissions:
 
 # one run at a time: a new run waits for the previous one instead of colliding with it
 concurrency:
-  group: network-build
+  group: tracker-update
   cancel-in-progress: false
 
 jobs:
-  build:
+  update:
     runs-on: ubuntu-latest
     environment:
       name: github-pages
@@ -28,16 +28,20 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Build the network, overlap and events pages (if the tracker changed)
+      - run: pip install lxml==5.3.0
+      - name: Fetch every source, normalise, build the site
+        run: python tracker.py
+      - name: Build the network page (published at the tracker's address + network/)
+        continue-on-error: true      # if the network step fails, the tracker is still published
         run: python network.py
       - name: Save the updated data
         continue-on-error: true      # if saving fails, the site is still published; the data is saved at the next run
         run: |
           git config user.name "tracker-bot"
           git config user.email "tracker-bot@users.noreply.github.com"
-          for d in data site ref; do if [ -e "$d" ]; then git add "$d"; fi; done
+          for d in data site raw ref; do if [ -e "$d" ]; then git add "$d"; fi; done
           if git diff --cached --quiet; then echo "Nothing new to save."; exit 0; fi
-          git commit -m "Network tracker update $(date +%Y-%m-%d)"
+          git commit -m "Data update $(date +%Y-%m-%d)"
           # if you committed while this run was going, fetch your changes first, then save (up to 3 tries)
           for attempt in 1 2 3; do
             git pull --rebase -X theirs origin main && git push && exit 0

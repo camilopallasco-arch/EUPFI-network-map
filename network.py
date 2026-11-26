@@ -854,7 +854,6 @@ function setHover(n, sticky) {
 function clickNode(n) {
   dealFocus = null;
   selected = n.id;
-  if (n.k === "country") { const was = focusCountry; focusCountry = n.id.slice(2); if (was !== focusCountry) buildGraph(); }
   panel(nodeById[n.id] || n); setHover(n, true);   // highlight and details only: the camera stays where it is
 }
 // full screen: the network and its panel together
@@ -934,7 +933,7 @@ function buildGraph() {
     .on("mousemove", (e, d) => showTip(e, `<b>${esc(d.l)}</b><br>${esc(KIND[d.k].label)}${d.v ? "<br>" + fmt(d.v) + " in the Franc Zone" : ""}`))
     .on("mouseleave", hideTip).on("click", (e, d) => { dealFocus = null;
       selected = d.id;
-      if (d.k === "country") { const was = focusCountry; focusCountry = d.id.slice(2); if (was !== focusCountry) { buildGraph(); } }
+
       highlight(); panel(nodeById[d.id] || d);
     });
   const csz = focusCountry ? d3.scaleSqrt().domain([0, d3.max(Object.values(csecNow(focusCountry))) || 1]).range([4, 16]) : null;
@@ -999,7 +998,7 @@ function panel(n) {
   } else if (n.k === "country") {
     const secs = Object.entries(csecNow(id)).sort((a, b) => b[1] - a[1]);
     html += `<h3>Sectors it receives money in</h3>` + (secs.length ? bars(secs.slice(0, 11).map(([s, v]) => [s, v]), css("--k-sec")) : `<p class="hint">No sector recorded.</p>`) +
-      `<p class="hint">Shown as green links on the graph. Click empty space to hide them.</p>` +
+      `<p class="hint">To see sectors on the network, switch on the Sectors button.</p>` +
       `<h3>Institutions</h3>${bars(grp("institution"), css("--t-dfi"))}<h3>Largest deals</h3>${dealList(D.deals.filter(d => d.c.includes(id)))}`;
   } else if (n.k === "memberstate") {
     html += `<h3>Institutions</h3>${bars(grp("institution"), css("--t-dfi"))}`;
@@ -1031,7 +1030,7 @@ function netIntro() {
     <div class="hint">Same total and rules as the tracker's header (investment and development finance since 1999; EU humanitarian aid and foreign-policy grants excluded). ${D.data_status === "live"
       ? `Tracker data of ${esc(D.generated)}, read at this build.`
       : `<span style="color:#ffc9a8">Using a saved copy of the tracker data of ${esc(D.generated)}: this site is not connected to the tracker, so its total may differ. Set TRACKER_SITE_URL in network.py.</span>`}</div>
-    <h3>How to read it</h3><p class="hint">Click any dot for its details and sources. Click a country to see the sectors it receives money in. Click empty space to clear. Use the buttons to add sectors or frameworks, "Since" to look at a period, and the search box to find an actor or a deal.</p>
+    <h3>How to read it</h3><p class="hint">Click any dot for its details and sources. Click a country to see, in this panel, the sectors it receives money in. Click empty space to clear. Use the buttons to add sectors or frameworks, "Since" to look at a period, and the search box to find an actor or a deal.</p>
     ${D.site ? `<p><a href="${esc(D.site)}" target="_blank" rel="noopener" style="color:var(--accent)">Open the EU-CFA Public finance tracker</a></p>` : ""}`;
 }
 netIntro();

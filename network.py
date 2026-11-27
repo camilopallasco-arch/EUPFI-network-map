@@ -715,7 +715,12 @@ Object.keys(TYPEVAR).forEach(t => chip(TYPELABEL[t], css(TYPEVAR[t]), true, () =
   chip(l, KIND[k].c(), layers[k], () => { layers[k] = !layers[k]; buildGraph(); }, "l:" + k));
 const minWrap = document.createElement("label"); minWrap.className = "ctl";
 minWrap.innerHTML = `Since <select id="since"><option value="0" selected>All years (1999 onward)</option>${Array.from({length: new Date().getFullYear() - 1998}, (_, i) => 1999 + i).map(y => `<option value="${y}">${y}</option>`).join("")}</select>`;
-lay.append(minWrap); $("#since").onchange = e => { SINCE = +e.target.value; buildGraph(); if (!selected) netIntro(); };
+lay.append(minWrap); $("#since").onchange = e => { SINCE = +e.target.value; buildGraph(); refreshPanel(); };
+// the right-hand panel always shows the chosen period: an actor's figures are recalculated, a deal stays as it is
+function refreshPanel() {
+  if (dealFocus) return;                                   // a deal's own amount does not depend on the period
+  if (selected && nodeById[selected]) panel(nodeById[selected]); else netIntro();
+}
 $("#netlegend").innerHTML = Object.entries(KIND).map(([k,v]) => `<span><i class="sw" style="background:${k === "country" ? css("--waemu") : v.c()}"></i>${v.label}</span>`).join("") +
   (USE3D ? `<span>Drag to rotate, scroll to zoom, hover to light up an actor, click for details. Grey lines: amount not published.</span>` : `<span>Size and line width follow euros. Drag a dot to pin it, double-click to release.</span>`);
 
@@ -980,7 +985,9 @@ function panel(n) {
   const id = n.id.slice(2), p = $("#netpanel");
   const nb = D.links.filter(l => l.s === n.id || l.t === n.id).map(l => [nodeById[l.s === n.id ? l.t : l.s], l]).filter(x => x[0]);
   let html = `<h2>${esc(n.l)}</h2><div class="meta">${esc(KIND[n.k].label)}${n.t ? " · " + esc(TYPELABEL[n.t]) : ""}</div>`;
-  if (n.v) html += `<div class="big">${fmt(n.v)}</div><div class="hint">attributed to Franc Zone countries since 1999</div>`;
+  const period = SINCE ? `since ${SINCE} (deals without a date left out)` : "since 1999";
+  if (n.v) html += `<div class="big">${fmt(n.v)}</div><div class="hint">attributed to Franc Zone countries ${period}</div>`;
+  else if (SINCE && ORIG_V[n.id]) html += `<div class="big">€0</div><div class="hint">no deals with a published amount ${period}; all years: ${fmt(ORIG_V[n.id])}</div>`;
   const grp = k => nb.filter(([m, l]) => m.k === k && l.v).sort((a, b) => b[1].v - a[1].v).slice(0, 10).map(([m, l]) => [m.l.length > 40 ? m.l.slice(0, 38) + "…" : m.l, l.v]);
   if (n.k === "institution" && id === "ebrd") {
     const ds = D.deals.filter(d => d.i === "ebrd"), withEU = ds.filter(d => d.eu && Object.keys(d.eu).length), noEU = ds.filter(d => !(d.eu && Object.keys(d.eu).length));
